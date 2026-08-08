@@ -28,13 +28,15 @@ rule is: **every phase ends in something you can run and judge.**
 | Tray | Renders; `toggle()` is a stub, no Settings item |
 | Renderer (5 components) | Renders; wrong layout, drifting timer |
 | **Mic capture** | **Does not exist** — only comments referring to it |
-| **Model download manager** | **Does not exist** — `src/main/models/` is empty |
+| Model download manager | **Built and verified against the network** (phase 1) |
 | **ASR engine** | **Does not exist** — `index.ts:83` throws |
 | **Recording controller** | **Does not exist** — 3 IPC channels declared, unhandled |
 
-**14 of 29 declared IPC channels have no handler**, including
-`RECORDING_START`, `RECORDING_STOP`, `MODEL_DOWNLOAD`, and `AI_SUMMARIZE`. The
-preload exposes `recording.start()`; calling it resolves to nothing.
+**5 of the 25 request/response IPC channels have no handler** —
+`RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`, `SESSION_GET`, and
+`AI_SUMMARIZE`. The preload exposes `recording.start()`; calling it resolves
+to nothing. (The 6 `EVENTS` channels are main→renderer pushes and have no
+handler by design.)
 
 ### The critical path, corrected
 
@@ -51,25 +53,60 @@ models ──► ASR worker ──► mic capture ──► recording controller
 
 ---
 
-## Phase 1 — Model download manager
+## Phase 1 — Model download manager ✅
 
 **Nothing works until a model is on disk.** Empty directory today.
 
 *Ends in:* pick a model in a dev harness, watch it download, verify it.
 
-- [ ] `src/main/models/ModelManager.ts` — resolve dir, check presence, report state
-- [ ] Download with progress → `MODEL_PROGRESS` events (throttle to ~10/s; see UI.md §0 on message rate)
-- [ ] **Resumable** via HTTP `Range`; a 635 MB download WILL be interrupted
-- [ ] **Verify checksum before extract.** Corrupt weights fail deep inside sherpa with an unreadable error
-- [ ] **Check free disk space before starting.** Ollama-style silent failure is the pattern to avoid; this is also the exact bug the summary prompt's own test data describes
-- [ ] Extract `.tar.bz2` → `userData/models/<id>/`, atomically (temp dir + rename)
-- [ ] Handlers: `MODEL_DOWNLOAD`, `MODEL_CANCEL`, `MODEL_DELETE`
-- [ ] Delete partial files on cancel or failure — never leave a half-model that reads as present
-- [ ] Real error states surfaced, never a hang
+- [x] `src/main/models/ModelManager.ts` — resolve dir, check presence, report state
+- [x] Download with progress → `MODEL_PROGRESS` events (throttled to 10/s; see UI.md §0 on message rate)
+- [x] **Resumable** via HTTP `Range`; a 635 MB download WILL be interrupted
+- [x] **Verify checksum before extract.** Corrupt weights fail deep inside sherpa with an unreadable error
+- [x] **Check free disk space before starting.** Ollama-style silent failure is the pattern to avoid
+- [x] Extract `.tar.bz2` → `userData/models/<id>/`, atomically (temp dir + rename)
+- [x] Handlers: `MODEL_DOWNLOAD`, `MODEL_CANCEL`, `MODEL_DELETE`, plus `MODEL_STATES`
+- [x] Delete partial files on cancel or failure — never leave a half-model that reads as present
+- [x] Real error states surfaced, never a hang
 
 > **Why first:** ARCHITECTURE §4.4 — across Vibe and Meetily, "failed to load
 > model" outnumbers accuracy complaints. It is the top user-visible defect
 > class in this category, and it is the first thing a new user touches.
+
+### What the build actually found
+
+All four models were downloaded and hashed on 8 Aug 2026, which changed three
+things the plan had assumed:
+
+1. **Extracted size is not download size.** The Whisper tarballs ship fp32
+   weights next to the int8 ones we load. whisper-small.en advertises 636 MB
+   and unpacks to **1.3 GB**, of which 924 MB is dead weight. Pruning is now
+   part of install, and the disk check budgets *peak* usage (tarball +
+   unpacked), not the download.
+
+2. **Every family lays its files out differently** — Whisper is
+   encoder/decoder/tokens, Moonshine is a four-stage
+   preprocess/encode/uncached_decode/cached_decode, Parakeet is a transducer
+   with a joiner. So presence is checked against a declared manifest. This is
+   what makes "half-extracted directory" report `not-downloaded` instead of
+   `ready`.
+
+3. **Checksums are pinned, not fetched.** Upstream publishes `checksum.txt` at
+   the same release tag, but a digest served by the host that served the file
+   proves only transfer integrity. Pinning proves the file is the expected one
+   and costs nothing, since release assets are immutable.
+
+Two facts worth keeping for phase 2: GitHub redirects to a **signed asset URL
+that expires in about an hour**, so resume must re-request the original URL;
+and every tarball ships `test_wavs/0.wav`, which is a ready-made fixture for
+testing ASR before recording exists.
+
+*Verified end to end against the real network:* clean install, resume from a
+100 MB partial (started at 43%, checksum still passed), cancel (settles in
+~11 ms, nothing left behind), corrupt-archive rejection, retry after
+corruption, idempotent re-download, and pruning. A bug was found and fixed in
+the process: `statfs` throws `ENOENT` on a directory that does not exist, so
+the disk check silently passed on first run — the one moment it matters.
 
 ---
 

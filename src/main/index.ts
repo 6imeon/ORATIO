@@ -6,6 +6,7 @@ import { loadSettings } from './storage/settings'
 import { SearchIndex } from './storage/searchIndex'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
+import { ModelManager } from './models/ModelManager'
 import { registerIpc } from './ipc'
 import { createTray } from './tray'
 
@@ -78,12 +79,18 @@ void app.whenReady().then(async () => {
 
   const searchIndex = new SearchIndex(join(app.getPath('userData'), 'index.sqlite'))
   const capture = new MacAudioCapture()
+  const models = new ModelManager()
+
+  // An install interrupted by a crash leaves a .tmp- directory behind. It is
+  // never a valid model, and clearing it here keeps a failed download from
+  // costing disk space indefinitely.
+  await models.sweep()
 
   const queue = new TranscriptionQueue(settings.vaultPath, () => {
     throw new Error('TODO: construct SherpaEngine for settings.activeModel')
   })
 
-  registerIpc({ capture, queue, searchIndex, showMainWindow })
+  registerIpc({ capture, queue, searchIndex, models, showMainWindow })
   createTray({ capture, showMainWindow })
 
   // Anything recorded but not transcribed — because the app quit or crashed

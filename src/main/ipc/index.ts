@@ -1,12 +1,13 @@
 import { ipcMain, dialog, shell, systemPreferences } from 'electron'
 import { join } from 'node:path'
 import log from 'electron-log/main'
-import { IPC, type PermissionState } from '@shared/ipc'
+import { IPC, EVENTS, type PermissionState } from '@shared/ipc'
 import { MODELS } from '@shared/models'
-import type { Settings } from '@shared/types'
+import type { ModelId, Settings } from '@shared/types'
 import type { MacAudioCapture } from '../audio/MacAudioCapture'
 import type { TranscriptionQueue } from '../transcription/TranscriptionQueue'
 import type { SearchIndex } from '../storage/searchIndex'
+import type { ModelManager } from '../models/ModelManager'
 import {
   listSessions,
   readTranscript,
@@ -21,6 +22,7 @@ interface Deps {
   capture: MacAudioCapture
   queue: TranscriptionQueue
   searchIndex: SearchIndex
+  models: ModelManager
   showMainWindow: () => void
 }
 
@@ -108,6 +110,27 @@ export function registerIpc(deps: Deps): void {
   // -- Models --------------------------------------------------------------
 
   ipcMain.handle(IPC.MODEL_LIST, () => Object.values(MODELS))
+
+  ipcMain.handle(IPC.MODEL_STATES, () => deps.models.list())
+
+  /**
+   * Downloads report progress on an event channel rather than resolving with
+   * it, so the renderer can show a live bar. The promise still settles on
+   * completion or failure — a UI that only listened to events would have no
+   * way to distinguish "finished" from "stalled".
+   */
+  ipcMain.handle(IPC.MODEL_DOWNLOAD, async (e, id: ModelId) => {
+    await deps.models.download(id, (state) => {
+      // The window can be closed mid-download — this is a menu-bar app and
+      // that is normal, not an error. Sending to a destroyed WebContents
+      // throws, which would fail the whole download for no reason.
+      if (!e.sender.isDestroyed()) e.sender.send(EVENTS.MODEL_PROGRESS, state)
+    })
+  })
+
+  ipcMain.handle(IPC.MODEL_CANCEL, (_e, id: ModelId) => deps.models.cancel(id))
+
+  ipcMain.handle(IPC.MODEL_DELETE, (_e, id: ModelId) => deps.models.remove(id))
 
   // -- AI providers --------------------------------------------------------
 

@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, EVENTS } from '@shared/ipc'
 import type { PermissionState, TranscriptionProgress } from '@shared/ipc'
 import type {
+  ModelId,
   ModelInfo,
+  ModelState,
   ProviderConfig,
   Session,
   Settings,
@@ -46,9 +48,11 @@ const api = {
 
   models: {
     list: (): Promise<ModelInfo[]> => ipcRenderer.invoke(IPC.MODEL_LIST),
-    download: (id: string): Promise<void> => ipcRenderer.invoke(IPC.MODEL_DOWNLOAD, id),
-    cancel: (id: string): Promise<void> => ipcRenderer.invoke(IPC.MODEL_CANCEL, id),
-    remove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.MODEL_DELETE, id),
+    /** Installed/downloading/absent, per model. Separate from the catalogue. */
+    states: (): Promise<ModelState[]> => ipcRenderer.invoke(IPC.MODEL_STATES),
+    download: (id: ModelId): Promise<void> => ipcRenderer.invoke(IPC.MODEL_DOWNLOAD, id),
+    cancel: (id: ModelId): Promise<void> => ipcRenderer.invoke(IPC.MODEL_CANCEL, id),
+    remove: (id: ModelId): Promise<void> => ipcRenderer.invoke(IPC.MODEL_DELETE, id),
   },
 
   ai: {
@@ -74,7 +78,7 @@ const api = {
       subscribe(EVENTS.TRANSCRIPTION_PROGRESS, cb),
     transcriptionPartial: (cb: (text: string) => void) =>
       subscribe(EVENTS.TRANSCRIPTION_PARTIAL, cb),
-    modelProgress: (cb: (p: unknown) => void) => subscribe(EVENTS.MODEL_PROGRESS, cb),
+    modelProgress: (cb: (p: ModelState) => void) => subscribe(EVENTS.MODEL_PROGRESS, cb),
     sessionChanged: (cb: (id: string) => void) => subscribe(EVENTS.SESSION_CHANGED, cb),
     aiToken: (cb: (token: string) => void) => subscribe(EVENTS.AI_TOKEN, cb),
   },

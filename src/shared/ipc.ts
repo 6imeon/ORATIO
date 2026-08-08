@@ -26,7 +26,10 @@ export const IPC = {
   SESSION_AUDIO_URL: 'session:audio:url',
 
   // Models
+  /** The catalogue — static metadata for the picker. */
   MODEL_LIST: 'model:list',
+  /** What is actually on disk. Distinct from the catalogue, and it changes. */
+  MODEL_STATES: 'model:states',
   MODEL_DOWNLOAD: 'model:download',
   MODEL_CANCEL: 'model:cancel',
   MODEL_DELETE: 'model:delete',
