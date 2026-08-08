@@ -1,0 +1,56 @@
+appId: com.oratio.app
+productName: Oratio
+copyright: MIT
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintrc,.prettierrc,.editorconfig,.gitignore}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!{pnpm-lock.yaml,pnpm-workspace.yaml}'
+  - '!{docs,scripts,dist}/*'
+  - '!**/*.map'
+
+asarUnpack:
+  # Native .node binaries and the AudioTee Swift helper cannot be executed
+  # from inside an asar archive — they must exist as real files on disk.
+  - '**/*.node'
+  - '**/node_modules/audiotee/**'
+  - '**/node_modules/sherpa-onnx-*/**'
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch: [arm64]
+  # macOS 14.2+ is required for the Core Audio process-tap API that
+  # AudioTee uses to capture system audio.
+  minimumSystemVersion: '14.2'
+  darkModeSupport: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    # TCC permission strings. NSAudioCaptureUsageDescription is a SEPARATE
+    # permission from the microphone — it is what gates Core Audio taps.
+    NSMicrophoneUsageDescription: >-
+      Oratio records your microphone so your side of the meeting can be
+      transcribed on this device.
+    NSAudioCaptureUsageDescription: >-
+      Oratio records system audio so the other participants can be
+      transcribed on this device.
+    NSCalendarsUsageDescription: >-
+      Oratio reads your calendar to label recordings with the meeting they
+      belong to. Calendar data never leaves this device.
+    # Menu-bar app: no Dock icon, no window on launch.
+    LSUIElement: true
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# Open-source build: unsigned. Signing/notarization intentionally omitted.
+# Users will need to right-click → Open on first launch.

@@ -1,0 +1,26 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.log
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Local agent working notes — not part of the project
+CLAUDE.md
+
+# Local env / scratch
+.env
+.env.local
+scratch/
+
+# Never commit models — they are downloaded on first run
+resources/models/
+*.onnx
+*.tar.bz2
+
+# Never commit recordings or a vault that wandered into the repo
+*.wav
+*.caf
+vault/

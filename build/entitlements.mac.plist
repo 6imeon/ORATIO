@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  IMPORTANT: com.apple.security.device.audio-input must be applied to
+	  EVERY binary in the bundle, not just the main executable. That is why
+	  electron-builder.yml sets BOTH `entitlements` and `entitlementsInherit`
+	  to this file.
+
+	  If a helper binary (the AudioTee Swift process, an Electron helper)
+	  is missing it, the microphone permission prompt never appears and
+	  capture silently returns zeroed buffers with no error. This is the
+	  single most common cause of "it records but the file is silent".
+	-->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!--
+	  Electron and the sherpa-onnx native addon require JIT and unsigned
+	  executable memory under the hardened runtime.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!--
+	  AudioTee ships as a separate Swift binary. Without disable-library-validation
+	  the OS refuses to load it and the .node native addons alongside it.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- Read/write the user-chosen vault folder anywhere on disk. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>
