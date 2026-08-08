@@ -14,7 +14,7 @@ cloud transcription.
 ## Status
 
 Early development. The architecture and interfaces are in place; capture,
-transcription, and UI are being wired up. See [RESEARCH.md](RESEARCH.md) for
+transcription, and UI are being wired up. See [docs/RESEARCH.md](docs/RESEARCH.md) for
 the design rationale and competitive analysis behind these choices.
 
 ## Requirements
