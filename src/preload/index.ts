@@ -13,6 +13,7 @@ import type {
   ModelState,
   ProviderConfig,
   RecordingState,
+  SearchHit,
   Session,
   SessionMeta,
   Settings,
@@ -52,7 +53,13 @@ const api = {
       ipcRenderer.invoke(IPC.SESSION_NOTES_SET, id, md),
     remove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_DELETE, id),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_REVEAL, id),
-    search: (q: string) => ipcRenderer.invoke(IPC.SESSION_SEARCH, q),
+    /** Ids and snippets only — never whole transcripts (UI.md §0). */
+    search: (q: string): Promise<SearchHit[]> => ipcRenderer.invoke(IPC.SESSION_SEARCH, q),
+    /**
+     * Rebuild the search index by rescanning the vault. Resolves with the
+     * number of sessions indexed.
+     */
+    reindex: (): Promise<number> => ipcRenderer.invoke(IPC.SESSION_REINDEX),
     /** Local file:// URL, so an <audio> element can seek to any transcript line. */
     /** Null when the session's audio was discarded — see SESSION_AUDIO_URL. */
     audioUrl: (id: string, track: 'mic' | 'system'): Promise<string | null> =>

@@ -13,6 +13,34 @@ for what has to land first.
 
 ### Added
 
+- **Search index moved into its own process**
+  (`src/main/storage/worker/`, fronted by `IndexClient`). better-sqlite3 is
+  synchronous by design, so every query blocked the thread that also draws the
+  tray and services the recording controller's 30 Hz state pushes. Measured on
+  20 000 segments: through the worker, main's event loop ticked 9 times in
+  46 ms; the same work in-process gave **0 ticks in 36 ms** — the menu bar
+  frozen for the whole duration. Search now never touches the tray.
+  - **Long-lived, unlike the ASR worker.** That one is killed per job because
+    inference leaks and process exit is the only reliable deallocator. SQLite's
+    footprint is bounded by its page cache instead, and respawning would mean
+    opening the database on every keystroke of an as-you-type search. It is
+    spawned once and reaped on quit, so it can never outlive the app holding a
+    WAL lock.
+  - **A dead worker makes search go quiet, not throw.** It is not respawned
+    automatically: the index is derived, so the honest failure is that search
+    stops until the next launch rebuilds it. Auto-restarting would hide a crash
+    loop behind a search box that works every other query.
+- **Rebuild the search index by rescanning the vault** (`session:reindex`).
+  What makes "SQLite is only a derived index" a testable claim rather than an
+  aspiration: delete `index.sqlite` and everything comes back from the plain
+  files alone. Verified by deleting the database outright — including its
+  `-wal` and `-shm` — and recovering a full vault.
+- **Startup reconcile between vault and index, both directions.** Sessions on
+  disk the index has not seen get added, and sessions the index still holds
+  that are gone from disk get dropped. The second half matters because the
+  vault is an ordinary folder the user chose: deleting a session in Finder is
+  a supported action, and a search hit that opens nothing is worse than no hit.
+  Runs in the background so it never delays the tray appearing.
 - **Recording controller** (`src/main/recording/RecordingController.ts`) — the
   piece that makes the app an app. Capture, storage and transcription all
   existed; nothing joined them. Press record, speak, stop, and a transcript
@@ -178,6 +206,17 @@ for what has to land first.
 
 ### Fixed
 
+- **The search payload rule was unenforced at the boundary that matters.** The
+  preload binding for `session.search` was the one untyped call on the bridge,
+  so it returned `any` and nothing stopped a whole transcript being handed to
+  the renderer. `SearchHit` now lives in `shared/types.ts` — it crosses to the
+  renderer, which cannot import from `main/` — and the binding is typed against
+  it. A real hit measures 193 bytes.
+- **Deleting a session could fail on a healthy delete.** `SESSION_DELETE`
+  removed the files and then unindexed; with the index now in another process
+  that second step can reject, which would surface as a failed deletion even
+  though the files were already gone. It is best-effort and logged instead, and
+  the next launch's reconcile clears the stale row.
 - **The ASR worker path was still wrong outside `pnpm dev`.** Phase 2 replaced
   `__dirname` with `app.getAppPath()`, which fixed the rollup-chunking trap —
   but `getAppPath()` is the project root under `electron-vite dev` and

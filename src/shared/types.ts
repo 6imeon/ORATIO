@@ -24,6 +24,26 @@ export interface Transcript {
   segments: TranscriptSegment[]
 }
 
+/**
+ * One search result.
+ *
+ * Deliberately small: a session id, where in it the match was, and a bounded
+ * snippet FTS5 built around the hit — never the segment's full text and never
+ * the transcript. A query that matches a two-hour meeting must cost a few
+ * hundred bytes, not the megabyte its transcript.json occupies (UI.md §0). The
+ * renderer fetches the transcript separately once the user picks a result.
+ */
+export interface SearchHit {
+  sessionId: string
+  title: string
+  startedAt: string
+  /** Ms offset of the matching line, so the UI can jump straight to the audio. */
+  startMs: number
+  speaker: string
+  /** Match wrapped in <mark>, ellipsised. Built by FTS5, not by us. */
+  snippet: string
+}
+
 /** One audio track on disk. */
 export interface TrackMeta {
   file: string

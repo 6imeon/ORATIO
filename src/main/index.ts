@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
 import { EVENTS } from '@shared/ipc'
 import { loadSettings } from './storage/settings'
-import { SearchIndex } from './storage/searchIndex'
+import { IndexClient, type IndexableSession } from './storage/IndexClient'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
 import { registerMicPort } from './audio/micPort'
@@ -12,7 +12,7 @@ import { RecordingController } from './recording/RecordingController'
 import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
-import { readMeta, readTranscript } from './storage/vault'
+import { readMeta, readTranscript, listSessions, sessionDir } from './storage/vault'
 import { createTray, setRecordingState } from './tray'
 
 log.initialize()
@@ -30,6 +30,12 @@ let mainWindow: BrowserWindow | null = null
 
 /** Set once `before-quit` has begun finalizing, so the second pass can proceed. */
 let quitting = false
+
+/**
+ * Module-scope so the `before-quit` handler below — registered outside
+ * `whenReady` — can shut the worker down. Null until the app is ready.
+ */
+let indexClient: IndexClient | null = null
 
 /**
  * Push an event to every live renderer.
@@ -159,7 +165,10 @@ void app.whenReady().then(async () => {
   const settings = await loadSettings()
   await mkdir(settings.vaultPath, { recursive: true })
 
-  const searchIndex = new SearchIndex(join(app.getPath('userData'), 'index.sqlite'))
+  // Lives in its own process: better-sqlite3 is synchronous, and a heavy query
+  // on main's thread freezes the tray — the one surface always on screen.
+  const searchIndex = new IndexClient(join(app.getPath('userData'), 'index.sqlite'))
+  indexClient = searchIndex
   const capture = new MacAudioCapture()
   const models = new ModelManager()
 
@@ -197,7 +206,21 @@ void app.whenReady().then(async () => {
     requestMic: (start) => requestMic(start),
   })
 
-  registerIpc({ capture, recording, queue, searchIndex, models, showMainWindow, claimMic })
+  // Before any handler can query it. A search arriving at a worker that has not
+  // opened its database would fail with a real error rather than empty results,
+  // which is correct but is not a state the user should ever be able to reach.
+  await searchIndex.start()
+
+  registerIpc({
+    capture,
+    recording,
+    queue,
+    searchIndex,
+    models,
+    showMainWindow,
+    claimMic,
+    rebuildIndex: () => reconcileIndex(true),
+  })
 
   // Registered once, not per recording: the renderer opens a fresh port for
   // each session, and a page reload would otherwise leave main listening to a
@@ -226,10 +249,76 @@ void app.whenReady().then(async () => {
 
   async function indexSession(sessionId: string): Promise<void> {
     const current = await loadSettings()
-    const dir = join(current.vaultPath, sessionId)
+    const dir = sessionDir(current.vaultPath, sessionId)
     const [meta, transcript] = await Promise.all([readMeta(dir), readTranscript(dir)])
     if (!meta || !transcript) return
-    searchIndex.indexSession(sessionId, meta, transcript)
+    await searchIndex.indexSession(sessionId, meta, transcript)
+  }
+
+  /**
+   * Read a session off disk in the shape the index wants, or null if it has
+   * nothing to index yet.
+   */
+  async function loadIndexable(
+    vaultPath: string,
+    sessionId: string,
+  ): Promise<IndexableSession | null> {
+    const dir = sessionDir(vaultPath, sessionId)
+    const [meta, transcript] = await Promise.all([readMeta(dir), readTranscript(dir)])
+    if (!meta || !transcript) return null
+    return { sessionId, meta, transcript }
+  }
+
+  /**
+   * Reconcile the index against the vault.
+   *
+   * The vault is the truth and the index is derived, so this is one-directional
+   * repair: sessions on disk that the index has never seen get added, and
+   * sessions the index still holds that are gone from disk get dropped. That
+   * second half matters because a user can delete a session folder in Finder —
+   * these are their files, which is the whole promise — and a stale hit that
+   * opens nothing is worse than no hit.
+   *
+   * `full` skips the diff and re-indexes everything, which is the answer to
+   * "the index is wrong and I do not know why". Nothing else can rebuild it,
+   * because nothing else is stored: delete index.sqlite and this restores it
+   * completely from the files.
+   */
+  async function reconcileIndex(full = false): Promise<number> {
+    const current = await loadSettings()
+    const sessions = await listSessions(current.vaultPath)
+    // Only transcribed sessions have anything to index. A pending one arrives
+    // via queue.on('completed') the moment its transcript lands.
+    const onDisk = sessions.filter((s) => s.status === 'ready')
+
+    if (full) {
+      const loaded = await Promise.all(
+        onDisk.map((s) => loadIndexable(current.vaultPath, s.id)),
+      )
+      const indexed = await searchIndex.rebuild(loaded.filter((s) => s !== null))
+      log.info('[index] rebuilt from vault', { sessions: indexed })
+      return indexed
+    }
+
+    const known = new Set(await searchIndex.indexedIds())
+    const missing = onDisk.filter((s) => !known.has(s.id))
+    const present = new Set(onDisk.map((s) => s.id))
+
+    for (const id of known) {
+      if (!present.has(id)) await searchIndex.removeSession(id)
+    }
+
+    for (const s of missing) {
+      const loadable = await loadIndexable(current.vaultPath, s.id)
+      if (loadable) {
+        await searchIndex.indexSession(loadable.sessionId, loadable.meta, loadable.transcript)
+      }
+    }
+
+    if (missing.length > 0 || known.size !== present.size) {
+      log.info('[index] reconciled', { added: missing.length, indexed: present.size })
+    }
+    return missing.length
   }
 
   app.on('before-quit', (e) => {
@@ -247,6 +336,12 @@ void app.whenReady().then(async () => {
   // no persisted state.
   await queue.resumePending()
 
+  // Catch the index up to the vault, in the background: it is not needed until
+  // the user types in the search box, and blocking startup on a scan of every
+  // session would delay the tray appearing. Deleting index.sqlite is a
+  // supported repair, so this path has to be able to rebuild from nothing.
+  void reconcileIndex().catch((err) => log.warn('[index] catch-up failed', err))
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) showMainWindow()
   })
@@ -262,4 +357,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   log.info('[app] quitting')
+  // The index worker is long-lived, so unlike the ASR worker nothing else ever
+  // kills it. Left running it would outlive the app as an orphan holding a WAL
+  // lock on the database.
+  indexClient?.close()
 })

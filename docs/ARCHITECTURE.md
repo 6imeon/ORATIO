@@ -417,7 +417,7 @@ Tracked honestly rather than guessed at.
 | 1 | Does sherpa expose `condition_on_previous_text`? | Repeat-loops in long meetings |
 | 2 | Moonshine's behaviour on silence — same as Whisper? | Hallucination filter mistuned |
 | 3 | Does AudioTee report mid-stream sample-rate changes? | Silent pitch-shifted garbage |
-| 4 | Renderer ↔ utilityProcess `MessagePort` wiring | Officially claimed, no official example; search may need to transit main |
+| 4 | ~~Renderer ↔ utilityProcess `MessagePort` wiring~~ | **Settled (phase 5): search transits main.** Not attempted direct — hits are ~200 bytes, so the copy is free, and main must broker anyway to keep one connection per database. Revisit only if a payload ever gets large |
 | 5 | Real inference throughput vs. realtime on M-series | Determines whether streaming partials are viable |
 | 6 | Does `disclaim` affect mic TCC inheritance? | Leave at default `false`; do not experiment blind |
 

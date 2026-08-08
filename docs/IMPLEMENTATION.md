@@ -23,7 +23,7 @@ rule is: **every phase ends in something you can run and judge.**
 | `TranscriptionQueue`, filesystem-as-queue, `resumePending()` | **Built and exercised end to end** (phase 2) |
 | VAD wrapper + hallucination filter | **Verified against real audio** (phase 2) |
 | System audio (AudioTee) | Built; **byte format corrected to Int16** (phase 3) |
-| SQLite FTS5 index | Built, runs in main (wrong process) |
+| SQLite FTS5 index | **Moved to its own `utilityProcess`; rebuild-by-rescan verified** (phase 5) |
 | AI providers + prompt + section parser | Built and typechecked; never called |
 | Tray | Wired to the controller; no Settings item yet |
 | Renderer (5 components) | Renders; wrong layout (timer drift fixed in phase 4) |
@@ -31,6 +31,7 @@ rule is: **every phase ends in something you can run and judge.**
 | Model download manager | **Built and verified against the network** (phase 1) |
 | ASR engine | **Built and verified** — 3 config families (phase 2) |
 | **Recording controller** | **Built and verified end to end** (phase 4) |
+| **Index worker** | **Built and verified** — tray-freeze measured, DB deleted and recovered (phase 5) |
 
 **1 of the request/response IPC channels has no handler** — `AI_SUMMARIZE`,
 which phase 8 wires. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
@@ -334,15 +335,81 @@ only exercised through its watcher). Both belong to phase 10.
 
 ---
 
-## Phase 5 — Index worker
+## Phase 5 — Index worker ✅
 
 *Ends in:* search works and never blocks the tray.
 
-- [ ] Move `SearchIndex` out of main into a long-lived `utilityProcess` (ARCHITECTURE §5 — better-sqlite3 is synchronous; a heavy query in main freezes the tray)
-- [ ] Index on transcript write
-- [ ] `SESSION_SEARCH` returns **IDs and snippets only** — never whole transcripts (UI.md §0 payload rule)
-- [ ] Rebuild-by-rescan path, and a way to trigger it
-- [ ] Prove it: delete the DB, confirm full recovery from files alone
+- [x] Move `SearchIndex` out of main into a long-lived `utilityProcess` (ARCHITECTURE §5 — better-sqlite3 is synchronous; a heavy query in main freezes the tray)
+- [x] Index on transcript write
+- [x] `SESSION_SEARCH` returns **IDs and snippets only** — never whole transcripts (UI.md §0 payload rule)
+- [x] Rebuild-by-rescan path, and a way to trigger it
+- [x] Prove it: delete the DB, confirm full recovery from files alone
+
+### What the build actually found
+
+**The tray-freeze argument is real, and now measured rather than asserted.**
+ARCHITECTURE §5 claims a synchronous query in main freezes the menu bar. The
+harness runs both: indexing 20 000 segments through the worker let main's event
+loop tick **9 times in 46 ms**, while the identical work done in-process
+delivered **0 ticks in 36 ms** — the loop was unavailable for its entire
+duration. That is the freeze, reproduced on demand, and it is what the extra
+process buys.
+
+**This worker is long-lived, unlike the ASR worker — deliberately.** The
+one-process-per-job discipline in phase 2 exists because inference leaks and
+`kill()` is the only reliable deallocator. SQLite has no equivalent problem: its
+footprint is bounded by the page cache, not by job size. Respawning per query
+would mean opening the database on every keystroke of an as-you-type search, so
+it is spawned once at startup and killed on `before-quit`. That shutdown is not
+optional — nothing else ever kills it, and an orphan would outlive the app
+holding a WAL lock.
+
+**The rollup entry key had to be `index-worker`, not `index`.** The obvious name
+collides with the main entry and silently overwrites `out/main/index.cjs` with
+the worker — an app that boots straight into a SQLite process and never shows a
+window. Caught at build time by watching the emitted file list rather than at
+runtime.
+
+**A crash is not repaired automatically, on purpose.** The index is derived, so
+the honest failure mode is that search stops working until the next launch
+rebuilds it. Silently respawning would hide a crash loop behind a search box
+that appears to work every other query. `SESSION_SEARCH` returns no results
+rather than rejecting, so a dead worker makes the search box go quiet instead of
+throwing a dialog on every keystroke, and the reason is in the log.
+
+**Startup reconcile is bidirectional.** Sessions on disk the index has never
+seen get added, *and* sessions the index still holds that are gone from disk get
+dropped. The second half is not hypothetical: these are the user's files in a
+folder they chose, so deleting a session in Finder is a supported action, and a
+stale hit that opens nothing is worse than no hit at all.
+
+**`SearchHit` moved to `shared/types.ts`.** It crosses to the renderer, which
+cannot import from `main/`. The preload binding for `search` was also untyped —
+it returned `any` — so the payload rule was unenforced at the one boundary where
+it matters.
+
+### Verification
+
+*Real Electron, 39 checks, all passing* — the only place `utilityProcess` exists
+and the only place better-sqlite3 is built against the right ABI.
+
+The payload rule is checked structurally, not by eye: a hit's keys are asserted
+to contain no `segments` or `transcript` field, and a real result measures
+**193 bytes**. Query handling covers prefix matching (`quart` → hit), Porter
+stemming (`reports` matches "report"), and six malformed FTS5 inputs — `"`, `*`,
+`a AND`, `NEAR(`, `)(`, `""` — none of which throw.
+
+**Rebuild by rescan, proven the hard way:** a vault of three transcribed
+sessions plus one recorded-but-not-yet-transcribed, then `index.sqlite` and its
+`-wal`/`-shm` deleted outright and the worker restarted. It reopens an empty
+database, returns nothing, and rebuilds to all three from the files alone — with
+the untranscribed session correctly skipped rather than indexed empty.
+
+Crash handling is exercised by `SIGKILL`ing the worker mid-life: the outstanding
+query rejects with *"Index worker exited unexpectedly (code 9)"* rather than
+hanging forever, main survives, and a fresh client recovers the index intact.
+`close()` is confirmed to actually reap the process (checked with `kill -0`) and
+to be safe to call twice.
 
 ---
 
@@ -464,5 +531,5 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phase 5 can slip. Phases 6–9 are parallelisable once
-4 lands. Phase 10 gates any release.
+without its predecessor. Phase 5 is done. Phases 6–9 are parallelisable now
+that 4 has landed. Phase 10 gates any release.

@@ -29,6 +29,14 @@ export const IPC = {
   SESSION_DELETE: 'session:delete',
   SESSION_REVEAL: 'session:reveal',
   SESSION_SEARCH: 'session:search',
+  /**
+   * Drop the search index and re-derive it from the vault.
+   *
+   * Exposed because the index is derived and therefore disposable — this is
+   * what makes that claim testable rather than aspirational. Resolves with the
+   * number of sessions indexed.
+   */
+  SESSION_REINDEX: 'session:reindex',
 
   // Audio playback — the differentiator: click a transcript line, hear it
   SESSION_AUDIO_URL: 'session:audio:url',

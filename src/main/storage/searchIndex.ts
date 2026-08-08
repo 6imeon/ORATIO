@@ -1,16 +1,10 @@
 import Database from 'better-sqlite3'
 import log from 'electron-log/main'
-import type { Transcript } from '@shared/types'
+import type { SearchHit, Transcript } from '@shared/types'
 
-export interface SearchHit {
-  sessionId: string
-  title: string
-  startedAt: string
-  /** Ms offset of the matching line, so the UI can jump straight to the audio. */
-  startMs: number
-  speaker: string
-  snippet: string
-}
+// Lives in shared/types because it crosses to the renderer. Re-exported here so
+// callers that think in terms of the index import it from the index.
+export type { SearchHit }
 
 /**
  * Full-text search across every meeting.
@@ -136,6 +130,36 @@ export class SearchIndex {
     return (
       this.#db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(sessionId) !== undefined
     )
+  }
+
+  /**
+   * Every session id the index knows about.
+   *
+   * Drives the incremental catch-up at startup: the vault is the truth, so
+   * anything on disk that is missing here needs indexing, and anything here
+   * that is missing on disk was deleted outside the app.
+   */
+  indexedIds(): string[] {
+    const rows = this.#db.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>
+    return rows.map((r) => r.id)
+  }
+
+  /**
+   * Empty both tables, keeping the schema and the file.
+   *
+   * Used by rebuild. Deliberately not "delete the file and reopen": the caller
+   * may be mid-rebuild when it crashes, and a truncated-but-valid database
+   * rebuilds cleanly on the next launch, whereas a half-written file does not.
+   * VACUUM afterwards because FTS5 leaves a lot of freed pages behind and a
+   * rebuild is exactly the moment nobody is waiting on a query.
+   */
+  clear(): void {
+    const tx = this.#db.transaction(() => {
+      this.#db.exec('DELETE FROM segments')
+      this.#db.exec('DELETE FROM sessions')
+    })
+    tx()
+    this.#db.exec('VACUUM')
   }
 
   close(): void {

@@ -64,13 +64,18 @@ export default defineConfig({
       // named-import BrowserWindow et al. ("does not provide an export
       // named 'BrowserWindow'"). Native addons are CJS-only too.
       rollupOptions: {
-        // The ASR worker is a SECOND entry point, not part of index.cjs. It
-        // runs as a utilityProcess, so it is forked by path at runtime
-        // (out/main/asr.cjs) and must exist as its own file — WorkerEngine
-        // resolves it relative to __dirname.
+        // The ASR and index workers are SEPARATE entry points, not part of
+        // index.cjs. Both run as utilityProcesses, forked by path at runtime
+        // (out/main/asr.cjs, out/main/index-worker.cjs), so each must exist as
+        // its own file rather than being bundled into main.
+        //
+        // `index-worker`, not `index`: that key is already the main entry, and
+        // colliding would overwrite index.cjs with the worker — an app that
+        // boots into a SQLite process and shows no window.
         input: {
           index: resolve('src/main/index.ts'),
           asr: resolve('src/main/transcription/worker/asr.ts'),
+          'index-worker': resolve('src/main/storage/worker/index.ts'),
         },
         external: ELECTRON_EXTERNAL,
         output: { format: 'cjs', entryFileNames: '[name].cjs' },

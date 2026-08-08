@@ -8,7 +8,7 @@ import type { ModelId, Settings } from '@shared/types'
 import type { MacAudioCapture } from '../audio/MacAudioCapture'
 import type { RecordingController } from '../recording/RecordingController'
 import type { TranscriptionQueue } from '../transcription/TranscriptionQueue'
-import type { SearchIndex } from '../storage/searchIndex'
+import type { IndexClient } from '../storage/IndexClient'
 import type { ModelManager } from '../models/ModelManager'
 import {
   listSessions,
@@ -26,9 +26,11 @@ interface Deps {
   capture: MacAudioCapture
   recording: RecordingController
   queue: TranscriptionQueue
-  searchIndex: SearchIndex
+  searchIndex: IndexClient
   models: ModelManager
   showMainWindow: () => void
+  /** Drop the index and re-derive it from the vault. Returns sessions indexed. */
+  rebuildIndex: () => Promise<number>
   /**
    * Grant the microphone to a WebContents that opened mid-recording, if no
    * other window already holds it. Main owns this decision because only main
@@ -108,7 +110,12 @@ export function registerIpc(deps: Deps): void {
   ipcMain.handle(IPC.SESSION_DELETE, async (_e, sessionId: string) => {
     const settings = await loadSettings()
     await deleteSession(sessionDir(settings.vaultPath, sessionId))
-    deps.searchIndex.removeSession(sessionId)
+    // Best-effort: the files are already gone, which is what the user asked
+    // for. A failure here leaves a stale hit that the next launch's reconcile
+    // clears, so it must not turn a successful delete into an error.
+    await deps.searchIndex
+      .removeSession(sessionId)
+      .catch((err) => log.warn('[ipc] could not unindex deleted session', sessionId, err))
   })
 
   ipcMain.handle(IPC.SESSION_REVEAL, async (_e, sessionId: string) => {
@@ -116,7 +123,35 @@ export function registerIpc(deps: Deps): void {
     shell.showItemInFolder(join(sessionDir(settings.vaultPath, sessionId), 'notes.md'))
   })
 
-  ipcMain.handle(IPC.SESSION_SEARCH, (_e, query: string) => deps.searchIndex.search(query))
+  /**
+   * Returns ids and snippets only — never whole transcripts (UI.md §0).
+   *
+   * `SearchHit` carries a bounded snippet built by FTS5 around the match, so a
+   * query matching a two-hour meeting costs a few hundred bytes rather than the
+   * megabyte its transcript.json occupies. The renderer fetches the full
+   * transcript through SESSION_TRANSCRIPT once the user picks a result.
+   *
+   * A dead index worker returns no results rather than rejecting: the search
+   * box going quiet is a better failure than an error dialog on every
+   * keystroke, and the reason is already in the log.
+   */
+  ipcMain.handle(IPC.SESSION_SEARCH, async (_e, query: string) => {
+    try {
+      return await deps.searchIndex.search(query)
+    } catch (err) {
+      log.warn('[ipc] search failed', err)
+      return []
+    }
+  })
+
+  /**
+   * Rebuild the index from the vault.
+   *
+   * The escape hatch that keeps "SQLite is derived" an honest claim rather than
+   * an aspiration — if the index is ever wrong, this is the fix, and it needs
+   * nothing but the files.
+   */
+  ipcMain.handle(IPC.SESSION_REINDEX, () => deps.rebuildIndex())
 
   /**
    * Discard a session's audio after the fact.
