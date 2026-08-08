@@ -21,6 +21,30 @@ const externalizeDeps = { include: ['electron'] }
  * externalizeDeps alone does not reliably cover devDependencies, and a
  * bundled `electron` produces a main process that cannot start at all.
  */
+/**
+ * Emit `out/main/package.json` containing `{"type":"commonjs"}`.
+ *
+ * The root package.json says `"type": "module"`, which makes Node treat every
+ * file under it as ESM regardless of extension. Electron loads the main entry
+ * through CommonJS so `index.cjs` is unaffected — but `utilityProcess.fork()`
+ * goes through Node's ESM-aware resolver, which reads that field and rejects
+ * the ASR worker with ERR_MODULE_NOT_FOUND. The nearest package.json wins, so
+ * this one scopes `out/main/` back to CommonJS.
+ *
+ * Generated rather than checked in: `out/` is build output, and a stale
+ * hand-written copy would be deleted by the next clean.
+ */
+const commonjsMarker = {
+  name: 'oratio:main-commonjs-marker',
+  generateBundle(this: { emitFile: (f: unknown) => void }) {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'package.json',
+      source: JSON.stringify({ type: 'commonjs' }),
+    })
+  },
+}
+
 const ELECTRON_EXTERNAL = [
   /^electron$/,
   /^electron\//,
@@ -40,9 +64,17 @@ export default defineConfig({
       // named-import BrowserWindow et al. ("does not provide an export
       // named 'BrowserWindow'"). Native addons are CJS-only too.
       rollupOptions: {
-        input: { index: resolve('src/main/index.ts') },
+        // The ASR worker is a SECOND entry point, not part of index.cjs. It
+        // runs as a utilityProcess, so it is forked by path at runtime
+        // (out/main/asr.cjs) and must exist as its own file — WorkerEngine
+        // resolves it relative to __dirname.
+        input: {
+          index: resolve('src/main/index.ts'),
+          asr: resolve('src/main/transcription/worker/asr.ts'),
+        },
         external: ELECTRON_EXTERNAL,
-        output: { format: 'cjs', entryFileNames: 'index.cjs' },
+        output: { format: 'cjs', entryFileNames: '[name].cjs' },
+        plugins: [commonjsMarker],
       },
     },
     resolve: {

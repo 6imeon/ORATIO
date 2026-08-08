@@ -30,7 +30,12 @@ export class TranscriptionQueue extends EventEmitter {
 
   constructor(
     private readonly vaultPath: string,
-    private readonly createEngine: () => TranscriptionEngine,
+    /**
+     * Async because building an engine means resolving model paths on disk —
+     * and because "the model is not downloaded" has to surface as a normal
+     * job failure written to transcribe.log, not an exception at startup.
+     */
+    private readonly createEngine: () => Promise<TranscriptionEngine>,
   ) {
     super()
   }
@@ -113,8 +118,18 @@ export class TranscriptionQueue extends EventEmitter {
     const meta = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8')) as SessionMeta
 
     if (!this.#engine) {
-      this.#engine = this.createEngine()
-      await this.#engine.prepare()
+      const engine = await this.createEngine()
+      try {
+        await engine.prepare()
+      } catch (err) {
+        // Assign only once loading has actually succeeded. A half-constructed
+        // engine left in the field would be reused by every subsequent job,
+        // turning one failed model load into a queue that can never recover
+        // without a restart.
+        await engine.release().catch(() => {})
+        throw err
+      }
+      this.#engine = engine
     }
     const engine = this.#engine
 

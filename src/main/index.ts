@@ -7,6 +7,7 @@ import { SearchIndex } from './storage/searchIndex'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
 import { ModelManager } from './models/ModelManager'
+import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
 import { createTray } from './tray'
 
@@ -86,8 +87,26 @@ void app.whenReady().then(async () => {
   // costing disk space indefinitely.
   await models.sweep()
 
-  const queue = new TranscriptionQueue(settings.vaultPath, () => {
-    throw new Error('TODO: construct SherpaEngine for settings.activeModel')
+  // Built fresh per drain so a model change in Settings takes effect on the
+  // next job rather than requiring a restart. Both lookups have to happen
+  // here rather than at startup: the model may not be downloaded yet when the
+  // app launches, and reporting that as a real error at transcribe time is
+  // better than failing to boot.
+  const queue = new TranscriptionQueue(settings.vaultPath, async () => {
+    const current = await loadSettings()
+    const files = await models.resolve(current.activeModel)
+    if (!files) {
+      throw new Error(`Model ${current.activeModel} is not downloaded`)
+    }
+    // VAD is mandatory, so its weights are a prerequisite of every job.
+    const vadModelPath = await models.ensureVad()
+
+    return new WorkerEngine(
+      current.activeModel,
+      files,
+      vadModelPath,
+      current.vadEnabled,
+    )
   })
 
   registerIpc({ capture, queue, searchIndex, models, showMainWindow })

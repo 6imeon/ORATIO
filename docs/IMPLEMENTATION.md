@@ -13,15 +13,15 @@ rule is: **every phase ends in something you can run and judge.**
 
 ## 0. Where we actually are
 
-2,654 lines. More is scaffolded than built, and the gaps are not where the
+3,898 lines. More is scaffolded than built, and the gaps are not where the
 `TODO` comments are.
 
 | Area | State |
 |---|---|
 | Build config, `utilityProcess`, sherpa load path | **Verified working** (ARCHITECTURE §1) |
 | Vault, `meta.json`/`transcript.json`, atomic writes | Built |
-| `TranscriptionQueue`, filesystem-as-queue, `resumePending()` | Built, never exercised |
-| VAD wrapper + hallucination filter | Built, never run |
+| `TranscriptionQueue`, filesystem-as-queue, `resumePending()` | **Built and exercised end to end** (phase 2) |
+| VAD wrapper + hallucination filter | **Verified against real audio** (phase 2) |
 | System audio (AudioTee) | Built |
 | SQLite FTS5 index | Built, runs in main (wrong process) |
 | AI providers + prompt + section parser | Built and typechecked; never called |
@@ -29,7 +29,7 @@ rule is: **every phase ends in something you can run and judge.**
 | Renderer (5 components) | Renders; wrong layout, drifting timer |
 | **Mic capture** | **Does not exist** — only comments referring to it |
 | Model download manager | **Built and verified against the network** (phase 1) |
-| **ASR engine** | **Does not exist** — `index.ts:83` throws |
+| ASR engine | **Built and verified** — 3 config families (phase 2) |
 | **Recording controller** | **Does not exist** — 3 IPC channels declared, unhandled |
 
 **5 of the 25 request/response IPC channels have no handler** —
@@ -110,25 +110,67 @@ the disk check silently passed on first run — the one moment it matters.
 
 ---
 
-## Phase 2 — ASR worker
+## Phase 2 — ASR worker ✅
 
 *Ends in:* a WAV on disk becomes `transcript.json`. First real transcript.
 
-- [ ] `src/main/transcription/worker/` — `utilityProcess` entry point
-- [ ] **One sherpa wrapper module.** Nothing else may `require('sherpa-onnx-node')` (ARCHITECTURE §4.2)
-- [ ] **`SHERPA_EXTERNAL_BUFFER` at every call site.** Already exported; the default `true` throws under the V8 cage on *every* recording (ARCHITECTURE §1.1)
-- [ ] Request/response protocol: `load` / `transcribe` / `release`
-- [ ] **Attach `message` handler before the child can exit**; drive the first send from `spawn` — otherwise `exit` beats `message` and the reply is lost
-- [ ] **`env` must be `string → string`** — `delete` the key, never assign `undefined`
-- [ ] `serviceName: 'oratio-asr'`, `stdio: 'pipe'`
-- [ ] VAD before ASR, always (existing `vad.ts`)
-- [ ] Run `isLikelyHallucination()` on output
-- [ ] One worker per job, `kill()` on completion (ARCHITECTURE §1.3 — process exit is the only reliable deallocator)
-- [ ] Replace the `throw` at `src/main/index.ts:83`
-- [ ] Both tracks transcribed, merged on the shared clock using `TrackMeta.startOffsetMs`
+- [x] `src/main/transcription/worker/` — `utilityProcess` entry point
+- [x] **One sherpa wrapper module.** Nothing else may `require('sherpa-onnx-node')` (ARCHITECTURE §4.2)
+- [x] **`SHERPA_EXTERNAL_BUFFER` at every call site.** Already exported; the default `true` throws under the V8 cage on *every* recording (ARCHITECTURE §1.1)
+- [x] Request/response protocol: `load` / `transcribe` / `release`
+- [x] **Attach `message` handler before the child can exit**; drive the first send from `spawn` — otherwise `exit` beats `message` and the reply is lost
+- [x] **`env` must be `string → string`** — `delete` the key, never assign `undefined`
+- [x] `serviceName: 'oratio-asr'`, `stdio: 'pipe'`
+- [x] VAD before ASR, always (existing `vad.ts`)
+- [x] Run `isLikelyHallucination()` on output
+- [x] One worker per job, `kill()` on completion (ARCHITECTURE §1.3 — process exit is the only reliable deallocator)
+- [x] Replace the `throw` at `src/main/index.ts:83`
+- [x] Both tracks transcribed, merged on the shared clock using `TrackMeta.startOffsetMs`
 
 **Test with a fixed WAV before any recording exists.** Decouples ASR bugs from
 capture bugs.
+
+### What the build actually found
+
+**`__dirname` cannot locate the worker.** It is the obvious way to resolve
+`asr.cjs` and it is wrong: rollup hoists code shared between entry points into
+`out/main/chunks/`, so the moment a second entry imports `WorkerEngine`,
+`__dirname` silently becomes `.../chunks` and the fork dies with
+`ERR_MODULE_NOT_FOUND`. Worse, it works whenever chunking happens not to kick
+in — so it fails on a build change rather than on a code change. Resolved from
+`app.getAppPath()` instead, which is stable in dev and inside the asar.
+
+**`"type": "module"` breaks `utilityProcess.fork`.** Electron loads the main
+entry through CommonJS, so `index.cjs` is unaffected by the root
+`package.json` — but `fork()` goes through Node's ESM-aware resolver, which
+reads that field and rejects the worker. The build now emits
+`out/main/package.json` containing `{"type":"commonjs"}`; the nearest
+package.json wins, so this scopes the output directory back to CJS.
+
+**A failed model load poisoned the queue.** `TranscriptionQueue` assigned
+`this.#engine` before `prepare()` resolved, so one failed load left a dead
+engine cached and every subsequent job in the queue failed against a worker
+that had never started — recoverable only by restarting the app. The engine is
+now assigned only after loading succeeds.
+
+**Silero VAD had no way onto disk.** It was declared in `models.ts` and
+required by the pipeline, but nothing downloaded it — so ASR would have failed
+on first run for every model. `ModelManager.ensureVad()` now fetches it
+(digest pinned, verified 8 Aug 2026) as a prerequisite of every job.
+
+*Verified inside real Electron* — not node, since the V8 memory cage and
+`utilityProcess` only exist there. 23 checks against the real models: 0.0% WER
+on all three config families (Whisper, Moonshine, Parakeet) against shipped
+ground truth; VAD splitting a constructed 37 s file into exactly its two
+utterances at 3.37 s and 13.96 s with the silent gap discarded; 8 s of digital
+silence producing zero segments; a missing WAV rejected without killing the
+worker; and the worker pid confirmed gone after `release()`, which is the whole
+memory argument for `utilityProcess`. End to end, two WAVs plus `meta.json`
+become a `transcript.json` with both speakers, the 2 000 ms track offset
+applied, and segments sorted onto one clock.
+
+Moonshine transcribed the same audio roughly **4× faster than Whisper base**
+(0.1 s vs 0.4 s), which supports keeping it as the default.
 
 ---
 

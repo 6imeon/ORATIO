@@ -10,7 +10,7 @@ import { statfs } from 'node:fs'
 import { app } from 'electron'
 import log from 'electron-log/main'
 import type { ModelId, ModelState } from '@shared/types'
-import { MODELS, MODEL_DOWNLOADS, type ModelDownload } from '@shared/models'
+import { MODELS, MODEL_DOWNLOADS, VAD_MODEL, type ModelDownload } from '@shared/models'
 
 const execFileAsync = promisify(execFile)
 const statfsAsync = promisify(statfs)
@@ -73,6 +73,43 @@ export class ModelManager {
     const files: Record<string, string> = {}
     for (const name of MODEL_DOWNLOADS[id].required) files[name] = join(dir, name)
     return files
+  }
+
+  /**
+   * Absolute path to the Silero VAD weights, downloading them if absent.
+   *
+   * VAD is not optional (see transcription/vad.ts), so this is a hard
+   * prerequisite of every ASR job rather than a model in its own right. It is
+   * 644 KB and shipped as a bare .onnx, so there is no extraction step — but
+   * it still gets the same verify-then-atomic-rename treatment, because a
+   * truncated VAD model fails inside sherpa exactly as unhelpfully as a
+   * truncated ASR one.
+   *
+   * Never bundled: the same first-run-download rule applies as to the models.
+   */
+  async ensureVad(): Promise<string> {
+    const dest = join(this.root, VAD_MODEL.fileName)
+
+    const existing = await stat(dest).catch(() => null)
+    if (existing?.isFile() && existing.size === VAD_MODEL.sizeBytes) return dest
+
+    log.info('[models] fetching Silero VAD')
+    await mkdir(this.root, { recursive: true })
+    const tmp = join(this.root, `.tmp-${VAD_MODEL.fileName}`)
+
+    try {
+      const res = await fetch(VAD_MODEL.url)
+      if (!res.ok || !res.body) {
+        throw new Error(`VAD download failed: ${res.status} ${res.statusText}`)
+      }
+      await pipeline(Readable.fromWeb(res.body as never), createWriteStream(tmp))
+      await this.verify(tmp, VAD_MODEL.sha256)
+      await rename(tmp, dest)
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {})
+    }
+
+    return dest
   }
 
   /**

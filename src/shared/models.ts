@@ -163,11 +163,21 @@ export const MODEL_INSTALLED_BYTES: Record<ModelId, number> = {
   'parakeet-tdt-v2': 631_000_000,
 }
 
-/** Silero VAD. Tiny, and mandatory — see transcription/vad.ts for why. */
+/**
+ * Silero VAD. Tiny, and mandatory — see transcription/vad.ts for why.
+ *
+ * It ships as a bare `.onnx`, not a tarball, so it needs no extraction. But it
+ * is a hard prerequisite for every model: without it the worker cannot run
+ * ASR at all, so it is fetched alongside whichever model the user picks
+ * rather than being a separate thing they could forget.
+ *
+ * Digest verified by download on 8 Aug 2026, same as the four ASR models.
+ */
 export const VAD_MODEL = {
   url: `${RELEASES}/silero_vad.onnx`,
   fileName: 'silero_vad.onnx',
   sizeBytes: 643_854,
+  sha256: '9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6',
 }
 
 export function formatSize(bytes: number): string {

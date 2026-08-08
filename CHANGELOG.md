@@ -13,6 +13,30 @@ for what has to land first.
 
 ### Added
 
+- **ASR worker** (`src/main/transcription/worker/`, `WorkerEngine.ts`) — audio
+  becomes text, entirely on the machine. A WAV plus `meta.json` now produces a
+  real `transcript.json`.
+  - Inference runs in a **`utilityProcess`, one per job, killed on
+    completion**. Electron warns that native modules in worker threads cause
+    crashes and memory corruption, and process exit is the only reliable
+    deallocator for this stack — so a model that fails to load takes down
+    nothing else, and no leak can accumulate across meetings.
+  - **A single module may require sherpa-onnx**, which is what makes
+    `enableExternalBuffer: false` structural rather than a rule to remember at
+    every call site. sherpa defaults it to `true`, and Electron's V8 memory
+    cage rejects external buffers outright.
+  - **VAD runs before ASR**, always. Verified on real audio: 8 seconds of
+    digital silence produce zero segments, and a 37-second file with two
+    utterances is split into exactly those two, with the silence discarded
+    rather than transcribed.
+  - All four models work through **one code path**, covering three different
+    config layouts — Whisper's encoder/decoder, Moonshine's four stages, and
+    Parakeet's transducer with a joiner.
+  - Both tracks are merged onto a shared clock via `TrackMeta.startOffsetMs`,
+    so speaker attribution comes from which file the audio was in rather than
+    from guessing.
+- **`ModelManager.ensureVad()`** — fetches and verifies the Silero VAD weights,
+  which the pipeline required but nothing had ever downloaded.
 - **Model download manager** (`src/main/models/ModelManager.ts`) — the first
   phase of the build, and the first thing a new user touches. Downloads are
   resumable via HTTP `Range`, verified against a pinned SHA-256 before
@@ -60,6 +84,25 @@ for what has to land first.
 
 ### Fixed
 
+- **A failed model load poisoned the entire queue.** `TranscriptionQueue`
+  cached the engine before `prepare()` had resolved, so one failed load left a
+  dead engine in the field and every subsequent session failed against a
+  worker that had never started — recoverable only by restarting the app. The
+  engine is now assigned only once loading succeeds.
+- **Silero VAD had no way onto disk.** It was declared in `models.ts` and
+  mandatory in the pipeline, but nothing ever downloaded it, so ASR would have
+  failed on first run for every model. Now fetched and checksum-verified as a
+  prerequisite of every job.
+- **The ASR worker could not be located by `__dirname`.** Rollup hoists code
+  shared between entry points into `out/main/chunks/`, so as soon as a second
+  entry imported `WorkerEngine`, `__dirname` silently became `.../chunks` and
+  the fork failed with `ERR_MODULE_NOT_FOUND` — a path that breaks on a build
+  change rather than a code change. Resolved from `app.getAppPath()` instead.
+- **`"type": "module"` broke `utilityProcess.fork`.** Electron loads the main
+  entry through CommonJS, so `index.cjs` was unaffected, but `fork()` uses
+  Node's ESM-aware resolver and rejected the worker outright. The build now
+  emits `out/main/package.json` with `{"type":"commonjs"}` to scope the output
+  directory back to CJS.
 - **Whisper models cost far more disk than the picker implied.** The tarballs
   ship full-precision weights alongside the int8 ones we actually load, so
   whisper-small.en advertised 636 MB and consumed **1.3 GB** — 924 MB of it
@@ -100,11 +143,15 @@ for what has to land first.
 
 Not defects so much as work not yet done — the honest state of the build:
 
-- Microphone capture does not exist, so the two-track split is half-built.
-- Nothing consumes a downloaded model yet: the ASR worker is unbuilt and
-  `src/main/index.ts` still throws where the engine should be constructed.
-- No recording controller: `RECORDING_START` and `AI_SUMMARIZE` are declared
-  but unhandled, along with 10 other channels.
+- Microphone capture does not exist, so the two-track split is half-built —
+  transcription has only ever been run against WAVs that were not recorded by
+  this app.
+- No recording controller: `RECORDING_START`, `RECORDING_STOP`,
+  `RECORDING_STATE`, `SESSION_GET`, and `AI_SUMMARIZE` are declared but
+  unhandled, so nothing can start a session from the UI.
+- The ASR worker is verified against three model families but only ever on
+  short clips. Multi-hour audio, and the memory behaviour across a long
+  queue, are untested.
 - No UI for the model picker — downloading currently works only through IPC.
 - The summarisation path is written and typechecked but has never been run
   against a real transcript.
