@@ -13,6 +13,100 @@ for what has to land first.
 
 ### Added
 
+- **Recording controller** (`src/main/recording/RecordingController.ts`) — the
+  piece that makes the app an app. Capture, storage and transcription all
+  existed; nothing joined them. Press record, speak, stop, and a transcript
+  appears.
+  - **Main owns recording and drives the renderer**, not the reverse.
+    `getUserMedia` lives only in the renderer, so the obvious design gives it
+    the recording — but the window is optional here. The tray has to be able
+    to start a meeting with nothing open, and closing the window mid-meeting
+    must not end it. Main sends `MIC_START`/`MIC_STOP`; the renderer is a
+    driver for the one API main cannot reach.
+  - **Exactly one window may hold the microphone.** A window opened
+    mid-meeting asks main whether it may take it rather than deciding for
+    itself — two windows both calling `getUserMedia` would interleave two
+    streams into one WAV, which is silently wrong rather than loudly broken.
+  - **`meta.json` is written last, and only on a clean stop.** Its presence is
+    what marks a session complete and enqueues it, so a crash before that
+    point leaves a directory the next launch simply ignores. There is no
+    half-enqueued state to repair, because the filesystem is the queue.
+  - **Duration comes from the sample count**, never the wall clock. A meeting
+    that lost ninety seconds to sleep is ninety seconds shorter than the clock
+    says, and every transcript timestamp is derived from sample positions.
+  - **`startOffsetMs` is measured, not assumed.** The mic and the system tap
+    start 85 ms apart in practice — two subsystems with different startup
+    costs — and treating that as zero puts every "me" line out against every
+    "them" line.
+  - `powerSaveBlocker('prevent-app-suspension')` while recording, explicitly
+    not `prevent-display-sleep`: there is no reason to keep someone's screen
+    awake through a meeting. Suspends are marked as discontinuities at the
+    instant they happen, because the event loop is about to freeze and no
+    later sample count can reveal where the hole was.
+  - Quitting mid-meeting finalizes the recording instead of orphaning it.
+  - The tray toggle is wired to the controller and reflects state rather than
+    owning it, so the menu reads the same whether recording was started from
+    the tray, the window, or the shortcut.
+- **Two live level meters, one per track** — never a combined one, which would
+  hide exactly the failure they exist to catch: one source dead while the
+  other is fine. Pushed as two floats at ~30 Hz; audio never crosses that
+  channel.
+- **The pre-record "delete audio after transcribing" toggle**, completing the
+  per-session discard feature below. Offered only before recording starts,
+  because that is the only point at which it can be honoured — the choice is
+  written into `meta.json` and read when the transcript lands, possibly on a
+  later launch.
+- **Per-session audio discard.** Recordings keep their audio by default —
+  that is what makes click-a-line-to-hear-it possible, and what lets a name
+  the transcript garbled be recovered from the source. But a meeting can now
+  be recorded with `discardAudio`, and both WAVs are deleted the moment the
+  transcript exists.
+  - **The choice lives in `meta.json`, not in Settings**, so it travels with
+    the session. The filesystem is the queue: a recording transcribed only
+    after a crash and relaunch has to carry its own instruction, because that
+    is the only thing the queue reads.
+  - **Deletion is ordered strictly after the transcript is on disk.** Until
+    then the audio is the only copy of the meeting, so a failed transcription
+    keeps it rather than destroying both.
+  - **An interrupted deletion is finished on the next launch.** A crash
+    between writing `transcript.json` and unlinking the WAVs would otherwise
+    leave the audio forever — the session has a transcript, so nothing would
+    ever look at it again.
+  - Honest about what it is not: the audio is written to disk and then
+    removed, so there is a window where it exists, and an ordinary unlink
+    cannot promise the bytes are unrecoverable on an SSD. Both are stated
+    where the feature is described rather than glossed.
+  - Sessions whose audio is gone say so, and their transcript lines stop
+    pretending to be playable.
+- **Microphone capture** (`src/renderer/src/audio/`, `src/main/audio/micPort.ts`)
+  — the second half of the two-track invariant. The mic is captured in the
+  renderer, the system tap in main, and the two are written to separate files
+  that are never mixed.
+  - An **AudioWorklet**, not a `ScriptProcessorNode`, so capture runs on the
+    audio thread rather than competing with React renders and garbage
+    collection. Dropped input frames cannot be retried — there is no rewind on
+    a microphone.
+  - **Resampling is a windowed-sinc pass with the anti-alias filter built in**,
+    at whatever rate the device runs. It has to be arbitrary-ratio: 44.1 kHz
+    devices exist and 44100/16000 is not an integer, so "take every Nth sample"
+    cannot be made to work even in principle. Measured: a 13 kHz tone rejected
+    at −95 dB, where naive decimation folds it into the speech band at 3 kHz at
+    full amplitude.
+  - Audio is **batched to 40 ms before crossing IPC** — 25 messages/s instead
+    of the ~375/s that posting every 128-frame quantum would cost. Bandwidth
+    was never the constraint; per-message overhead is.
+  - **Duration comes from the sample count**, and suspends and device rate
+    changes are recorded as discontinuities at the millisecond they occur. An
+    OS suspend freezes the event loop, so a wall clock silently overstates a
+    track that lost ninety seconds to sleep.
+  - The **WAV header is patched every 30 seconds** rather than only at stop, so
+    a crash leaves a playable truncated file instead of one every tool reports
+    as empty. Backpressure is respected rather than buffered past.
+  - A **liveness check** reports a track that is digitally silent after three
+    seconds. Every macOS audio failure mode — a missing entitlement on a helper
+    binary, a tap-only aggregate device, an unsupported voice-processing route
+    — returns success and then delivers zeroes, and a real microphone always
+    has a noise floor.
 - **ASR worker** (`src/main/transcription/worker/`, `WorkerEngine.ts`) — audio
   becomes text, entirely on the machine. A WAV plus `meta.json` now produces a
   real `transcript.json`.
@@ -84,6 +178,43 @@ for what has to land first.
 
 ### Fixed
 
+- **The ASR worker path was still wrong outside `pnpm dev`.** Phase 2 replaced
+  `__dirname` with `app.getAppPath()`, which fixed the rollup-chunking trap —
+  but `getAppPath()` is the project root under `electron-vite dev` and
+  `out/main` when the built output is launched directly, so the join produced
+  `out/main/out/main/asr.cjs` and transcription failed with a missing binary.
+  It worked in the dev server and nowhere else. Both layouts are now tried,
+  and the error names every path it looked in.
+- **The recording timer drifted.** `RecordButton` accumulated
+  `setElapsed(e => e + 1)` on an interval, and a backgrounded renderer is
+  throttled to roughly one tick a minute — which, for a menu-bar app during a
+  meeting, is most of the time. Elapsed time is now read from the pushed
+  `RecordingState`. It remains wall-clock on purpose, unlike the duration in
+  `meta.json`: someone watching a timer expects to see the time that passed,
+  including a suspend, while the file has to match the audio.
+- **The tray counter froze after sleep** and stayed frozen until the next
+  tick, because the interval driving it does not run while the machine is
+  asleep. It now redraws on `powerMonitor` resume.
+- **A double-click on the tray item toggled recording twice** — the second
+  fire stopping the recording the first had just started.
+  `setIgnoreDoubleClickEvents(true)`.
+- **`TranscriptionQueue` acted on a stale `meta.json` when discarding audio.**
+  The comment claimed the file was re-read after transcription and it was not,
+  so a job that took minutes decided using a copy read before it started —
+  and `discardSessionAudio` writes to that same file.
+- **The system-audio track was never valid audio.** AudioTee switches its
+  encoding to 16-bit signed integers whenever a sample rate is requested — and
+  we always request 16 kHz — but the decoder read the bytes as 32-bit floats.
+  Sample values came back around `1e38` and the entire track was noise, while
+  still producing a WAV of exactly the right length, which is how it survived
+  unnoticed. The first buffer of every recording is now range-checked, so a
+  format mismatch raises an error instead of silently ruining a meeting.
+- **PCM sent through the context bridge arrived empty.** An `ArrayBuffer`
+  passed into a `contextBridge`-exposed function never reaches the main
+  process, and `postMessage` accepts the detached result without raising —
+  producing a full-length recording of pure silence with a completely clean
+  log in all three processes. The renderer now passes a `Float32Array` and the
+  transfer happens preload-side, past the bridge, where it is meaningful.
 - **A failed model load poisoned the entire queue.** `TranscriptionQueue`
   cached the engine before `prepare()` had resolved, so one failed load left a
   dead engine in the field and every subsequent session failed against a
@@ -143,12 +274,19 @@ for what has to land first.
 
 Not defects so much as work not yet done — the honest state of the build:
 
-- Microphone capture does not exist, so the two-track split is half-built —
-  transcription has only ever been run against WAVs that were not recorded by
-  this app.
-- No recording controller: `RECORDING_START`, `RECORDING_STOP`,
-  `RECORDING_STATE`, `SESSION_GET`, and `AI_SUMMARIZE` are declared but
-  unhandled, so nothing can start a session from the UI.
+- `AI_SUMMARIZE` is declared but unhandled — summarisation is written and
+  typechecked but not yet wired to anything.
+- Recording is verified against short sessions. **Multi-hour meetings are
+  untested**, as is the memory behaviour across a long queue. The
+  device-rate-change rebuild path has been exercised only through its watcher,
+  never by physically switching audio devices mid-recording.
+- Starting a recording with no window open records **system audio only**. That
+  is deliberate — opening a window unbidden to capture a microphone is exactly
+  what a meeting recorder should not do — but it means a tray-started meeting
+  captures one side until the window is opened.
+- The mic path is proven with Chromium's fake device rather than a physical
+  microphone, so real-device permission behaviour is inferred from the
+  liveness check rather than observed.
 - The ASR worker is verified against three model families but only ever on
   short clips. Multi-hour audio, and the memory behaviour across a long
   queue, are untested.

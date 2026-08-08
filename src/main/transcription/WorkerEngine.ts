@@ -108,15 +108,24 @@ export class WorkerEngine implements TranscriptionEngine {
       // fails with ERR_MODULE_NOT_FOUND. That makes __dirname a hidden
       // dependency on how rollup happened to chunk the build.
       //
-      // `app.getAppPath()` is the project root in dev and the asar root when
-      // packaged, so out/main/asr.cjs is correct in both.
-      const entry = join(app.getAppPath(), 'out', 'main', 'asr.cjs')
+      // `app.getAppPath()` is the asar root when packaged and the project root
+      // under `electron-vite dev` — but it is `out/main` when the built output
+      // is launched directly (`electron out/main/index.cjs`), which doubles the
+      // join into out/main/out/main. Both layouts are legitimate, so both are
+      // tried rather than assuming which one we are in.
+      const appPath = app.getAppPath()
+      const candidates = [
+        join(appPath, 'out', 'main', 'asr.cjs'),
+        // Already inside out/main — the direct-launch case.
+        join(appPath, 'asr.cjs'),
+      ]
+      const entry = candidates.find((p) => existsSync(p))
 
       // A missing worker is a build error, and it must not present as the
       // spawn timeout below — "did not start" would send someone hunting a
       // native-module problem that does not exist.
-      if (!existsSync(entry)) {
-        reject(new Error(`ASR worker binary missing at ${entry}`))
+      if (!entry) {
+        reject(new Error(`ASR worker binary not found. Looked in: ${candidates.join(', ')}`))
         return
       }
 

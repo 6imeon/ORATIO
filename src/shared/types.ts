@@ -44,6 +44,25 @@ export interface SessionMeta {
   endedAt: string
   durationSeconds: number
   tracks: TrackMeta[]
+  /**
+   * Delete the audio once a transcript exists — chosen per session, before
+   * recording starts, for a meeting the user does not want a verbatim copy of.
+   *
+   * Lives in meta.json rather than in Settings on purpose. The decision has to
+   * survive a crash between recording and transcription, and the filesystem is
+   * the queue: a session that is resumed on next launch must carry its own
+   * instruction with it, because there is nowhere else the queue looks.
+   *
+   * Absent means keep, so every session recorded before this existed keeps its
+   * audio.
+   */
+  discardAudio?: boolean
+  /**
+   * Set once the audio has actually been deleted, so the UI can distinguish
+   * "no audio because you asked" from "no audio because something broke" —
+   * and so click-to-play can explain itself rather than silently failing.
+   */
+  audioDiscardedAt?: string
 }
 
 export type SessionStatus =
@@ -61,6 +80,14 @@ export interface Session {
   durationSeconds: number
   status: SessionStatus
   hasNotes: boolean
+  /**
+   * Whether the audio is still on disk. Drives click-to-play: a session whose
+   * audio was discarded must say so rather than offering a play button that
+   * does nothing.
+   */
+  hasAudio: boolean
+  /** ISO timestamp, present only when the audio was deliberately discarded. */
+  audioDiscardedAt?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +159,14 @@ export interface Settings {
   activeModel: ModelId
   /** Skip non-speech before ASR. Off means Whisper hallucinates on silence. */
   vadEnabled: boolean
+  /**
+   * Default for a new session's `discardAudio`. Off — audio is kept, which is
+   * what makes click-a-line-to-hear-it possible and what lets a garbled name
+   * be recovered from the source. The per-session toggle overrides it either
+   * way, so someone who mostly records sensitive meetings can flip the
+   * default rather than remembering each time.
+   */
+  discardAudioByDefault: boolean
   launchAtLogin: boolean
   providers: ProviderConfig[]
   activeProvider: ProviderId | null

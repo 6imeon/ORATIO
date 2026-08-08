@@ -135,6 +135,8 @@ export async function listSessions(vaultPath: string): Promise<Session[]> {
       durationSeconds: meta.durationSeconds,
       status: hasTranscript ? 'ready' : 'pending',
       hasNotes: existsSync(join(dir, FILES.notes)),
+      hasAudio: hasAudio(dir),
+      ...(meta.audioDiscardedAt ? { audioDiscardedAt: meta.audioDiscardedAt } : {}),
     })
   }
 
@@ -143,6 +145,41 @@ export async function listSessions(vaultPath: string): Promise<Session[]> {
 
 export async function deleteSession(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true })
+}
+
+/**
+ * Delete a session's audio, keeping the transcript and notes.
+ *
+ * For sessions recorded with `discardAudio` set. The audio cannot simply not
+ * be written — VAD and ASR both read the WAVs — so the honest description is
+ * that it is deleted at the earliest moment it is no longer needed, not that
+ * it never existed. That window is stated plainly in the UI rather than
+ * papered over.
+ *
+ * Deliberately NOT atomic-swap or shred: this is an ordinary unlink, so the
+ * bytes may remain recoverable on the underlying device. Promising secure
+ * erase would be a lie on a modern SSD, where wear levelling puts the physical
+ * blocks out of our reach entirely.
+ *
+ * Safe to call twice. Deletion is driven by re-reading meta.json after the
+ * transcript lands, so a crash mid-delete simply retries on the next launch.
+ */
+export async function discardSessionAudio(dir: string): Promise<void> {
+  const meta = await readMeta(dir)
+  if (!meta) return
+
+  for (const file of [FILES.mic, FILES.system]) {
+    await rm(join(dir, file), { force: true })
+  }
+
+  // Recorded only after the files are gone, so the flag can never claim a
+  // deletion that did not happen.
+  await writeMeta(dir, { ...meta, audioDiscardedAt: new Date().toISOString() })
+}
+
+/** Whether a session still has audio on disk. */
+export function hasAudio(dir: string): boolean {
+  return existsSync(join(dir, FILES.mic)) || existsSync(join(dir, FILES.system))
 }
 
 /**

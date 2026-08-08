@@ -25,6 +25,19 @@ export interface TrackResult {
   /** Peak amplitude seen across the whole track, 0..1. Zero means silence. */
   peak: number
   bytesWritten: number
+  /**
+   * Samples actually written. Duration must be derived from this, never from
+   * elapsed wall-clock: OS suspend freezes the event loop, and a track that
+   * lost 90 seconds to sleep is 90 seconds shorter than the clock says
+   * (ARCHITECTURE §3).
+   */
+  samples: number
+  /**
+   * Offsets, in ms from this track's own start, where capture was
+   * interrupted — a device rate change or a system suspend. Audio either side
+   * is valid; the timeline across the gap is not.
+   */
+  discontinuities: number[]
 }
 
 export interface CaptureResult {
@@ -40,6 +53,13 @@ export interface CaptureEvents {
    * resampled, so consumers never deal with device formats.
    */
   pcm: (track: 'mic' | 'system', samples: Float32Array) => void
+  /**
+   * A track produced exact digital silence for LIVENESS_CHECK_MS. Every
+   * macOS audio failure mode reports success and then delivers zeroes, so
+   * this is the only way to learn about it — and learning about it two
+   * minutes in is worth far more than learning about it at stop().
+   */
+  dead: (track: 'mic' | 'system') => void
   error: (err: Error) => void
 }
 

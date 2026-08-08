@@ -16,11 +16,15 @@ interface Props {
  *
  * Two <audio> elements, one per track, because the tracks are never mixed:
  * a "me" line plays from mic.wav, a "them" line from system.wav.
+ *
+ * Unless the user asked us not to keep it. A session recorded with
+ * `discardAudio` has a transcript and no WAVs, and then playback is disabled
+ * and said out loud rather than left as a play button that does nothing.
  */
 export function TranscriptView({ sessionId, transcript }: Props): React.JSX.Element {
   const micRef = useRef<HTMLAudioElement>(null)
   const systemRef = useRef<HTMLAudioElement>(null)
-  const [urls, setUrls] = useState<{ mic: string; system: string } | null>(null)
+  const [urls, setUrls] = useState<{ mic: string | null; system: string | null } | null>(null)
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
 
   useEffect(() => {
@@ -33,7 +37,13 @@ export function TranscriptView({ sessionId, transcript }: Props): React.JSX.Elem
     })()
   }, [sessionId])
 
+  // Null for both tracks means the audio was discarded — this session was
+  // recorded with "don't keep audio", so there is nothing to play and the
+  // lines must not pretend to be clickable.
+  const hasAudio = Boolean(urls && (urls.mic || urls.system))
+
   function play(seg: TranscriptSegment, index: number): void {
+    if (!hasAudio) return
     const el = seg.speaker === 'me' ? micRef.current : systemRef.current
     const other = seg.speaker === 'me' ? systemRef.current : micRef.current
     if (!el) return
@@ -48,20 +58,32 @@ export function TranscriptView({ sessionId, transcript }: Props): React.JSX.Elem
 
   return (
     <div className="flex flex-col gap-1">
-      {urls && (
-        <>
-          <audio ref={micRef} src={urls.mic} preload="metadata" onEnded={() => setPlayingIndex(null)} />
-          <audio ref={systemRef} src={urls.system} preload="metadata" onEnded={() => setPlayingIndex(null)} />
-        </>
+      {urls?.mic && (
+        <audio ref={micRef} src={urls.mic} preload="metadata" onEnded={() => setPlayingIndex(null)} />
+      )}
+      {urls?.system && (
+        <audio
+          ref={systemRef}
+          src={urls.system}
+          preload="metadata"
+          onEnded={() => setPlayingIndex(null)}
+        />
+      )}
+
+      {urls && !hasAudio && (
+        <p className="mb-1 px-2 py-1.5 text-xs text-neutral-500">
+          Audio was discarded for this meeting. The transcript is all that was kept.
+        </p>
       )}
 
       {transcript.segments.map((seg, i) => (
         <button
           key={`${seg.startMs}-${i}`}
           onClick={() => play(seg, i)}
-          className={`group flex gap-3 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-            playingIndex === i ? 'bg-blue-50 dark:bg-blue-950' : ''
-          }`}
+          disabled={!hasAudio}
+          className={`group flex gap-3 rounded px-2 py-1.5 text-left text-sm transition-colors ${
+            hasAudio ? 'hover:bg-neutral-100 dark:hover:bg-neutral-800' : 'cursor-default'
+          } ${playingIndex === i ? 'bg-blue-50 dark:bg-blue-950' : ''}`}
         >
           <time className="w-14 shrink-0 pt-0.5 font-mono text-xs tabular-nums text-neutral-400">
             {formatClock(seg.startMs)}

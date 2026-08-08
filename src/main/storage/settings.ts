@@ -24,6 +24,7 @@ export function defaultSettings(): Settings {
     vaultPath: join(app.getPath('home'), 'Documents', 'Oratio'),
     activeModel: DEFAULT_MODEL,
     vadEnabled: true,
+    discardAudioByDefault: false,
     launchAtLogin: false,
     providers: [
       { id: 'ollama', enabled: true, model: 'qwen3:4b', baseUrl: 'http://127.0.0.1:11434' },
@@ -35,14 +36,23 @@ export function defaultSettings(): Settings {
 }
 
 export async function loadSettings(): Promise<Settings> {
+  let settings: Settings
   try {
     const raw = await readFile(settingsPath(), 'utf8')
     // Merge over defaults so a settings file written by an older version
     // never leaves new keys undefined.
-    return { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) }
+    settings = { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) }
   } catch {
-    return defaultSettings()
+    settings = defaultSettings()
   }
+
+  // Escape hatch for verification harnesses and the phase 10 soak test, which
+  // must never write into the user's real vault. Env-only and deliberately
+  // undocumented in the UI — it is a testing affordance, not a feature.
+  const override = process.env['ORATIO_VAULT']
+  if (override) settings = { ...settings, vaultPath: override }
+
+  return settings
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {

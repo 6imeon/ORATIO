@@ -1,6 +1,7 @@
-import { Menu, Tray, nativeImage, app } from 'electron'
+import { Menu, Tray, nativeImage, app, powerMonitor } from 'electron'
 import { join } from 'node:path'
-import type { MacAudioCapture } from './audio/MacAudioCapture'
+import log from 'electron-log/main'
+import type { RecordingController } from './recording/RecordingController'
 
 /**
  * Menu-bar presence.
@@ -12,7 +13,7 @@ import type { MacAudioCapture } from './audio/MacAudioCapture'
  */
 
 interface TrayDeps {
-  capture: MacAudioCapture
+  recording: RecordingController
   showMainWindow: () => void
 }
 
@@ -30,13 +31,25 @@ export function createTray(deps: TrayDeps): Tray {
 
   tray = new Tray(icon)
   tray.setToolTip('Oratio')
+
+  // A double-click would otherwise fire the menu item twice, and the second
+  // fire is a *stop* on a recording the first just started.
+  tray.setIgnoreDoubleClickEvents(true)
+
+  // The interval that drives the counter does not run while the machine is
+  // asleep, so the title is frozen at whatever it said when the lid closed.
+  // Redraw on wake rather than waiting up to a second for the next tick.
+  powerMonitor.on('resume', () => {
+    if (startedAt !== null) tray?.setTitle(` ${elapsed()}`)
+  })
+
   render(deps)
   return tray
 }
 
 function render(deps: TrayDeps): void {
   if (!tray) return
-  const recording = deps.capture.isRecording()
+  const recording = deps.recording.isRecording()
 
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -55,10 +68,22 @@ function render(deps: TrayDeps): void {
   tray.setTitle(recording ? ` ${elapsed()}` : '')
 }
 
+/**
+ * The tray reflects state rather than owning it: this calls the controller and
+ * lets its `started`/`stopped` events drive the redraw, so the menu says the
+ * same thing whether the recording was toggled from here, the window, or a
+ * shortcut.
+ */
 async function toggle(deps: TrayDeps): Promise<void> {
-  // Wired to the recording controller in ipc/recording.ts; the tray only
-  // reflects state rather than owning it.
-  render(deps)
+  try {
+    if (deps.recording.isRecording()) await deps.recording.stop()
+    else await deps.recording.start()
+  } catch (err) {
+    log.error('[tray] could not toggle recording', err)
+    // Resync: a failed start leaves the menu claiming a state that never
+    // happened.
+    render(deps)
+  }
 }
 
 export function setRecordingState(active: boolean, deps: TrayDeps): void {

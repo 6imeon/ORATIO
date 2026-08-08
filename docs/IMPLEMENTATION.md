@@ -22,21 +22,20 @@ rule is: **every phase ends in something you can run and judge.**
 | Vault, `meta.json`/`transcript.json`, atomic writes | Built |
 | `TranscriptionQueue`, filesystem-as-queue, `resumePending()` | **Built and exercised end to end** (phase 2) |
 | VAD wrapper + hallucination filter | **Verified against real audio** (phase 2) |
-| System audio (AudioTee) | Built |
+| System audio (AudioTee) | Built; **byte format corrected to Int16** (phase 3) |
 | SQLite FTS5 index | Built, runs in main (wrong process) |
 | AI providers + prompt + section parser | Built and typechecked; never called |
-| Tray | Renders; `toggle()` is a stub, no Settings item |
-| Renderer (5 components) | Renders; wrong layout, drifting timer |
-| **Mic capture** | **Does not exist** — only comments referring to it |
+| Tray | Wired to the controller; no Settings item yet |
+| Renderer (5 components) | Renders; wrong layout (timer drift fixed in phase 4) |
+| Mic capture | **Built and verified** — worklet → port → WAV, lossless (phase 3) |
 | Model download manager | **Built and verified against the network** (phase 1) |
 | ASR engine | **Built and verified** — 3 config families (phase 2) |
-| **Recording controller** | **Does not exist** — 3 IPC channels declared, unhandled |
+| **Recording controller** | **Built and verified end to end** (phase 4) |
 
-**5 of the 25 request/response IPC channels have no handler** —
-`RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`, `SESSION_GET`, and
-`AI_SUMMARIZE`. The preload exposes `recording.start()`; calling it resolves
-to nothing. (The 6 `EVENTS` channels are main→renderer pushes and have no
-handler by design.)
+**1 of the request/response IPC channels has no handler** — `AI_SUMMARIZE`,
+which phase 8 wires. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
+and `SESSION_GET` were the phase 4 gap and are now handled. (The `EVENTS`
+channels are main→renderer pushes and have no handler by design.)
 
 ### The critical path, corrected
 
@@ -174,37 +173,164 @@ Moonshine transcribed the same audio roughly **4× faster than Whisper base**
 
 ---
 
-## Phase 3 — Mic capture
-
-**Currently absent.** Until this exists the two-track invariant — the whole
-product — is half-built.
+## Phase 3 — Mic capture ✅
 
 *Ends in:* two WAVs, correctly aligned.
 
-- [ ] `getUserMedia` in the renderer; **AudioWorklet**, not `ScriptProcessorNode`
-- [ ] Downsample to 16 kHz **with an anti-alias filter** — naive decimation folds HF noise into the speech band and measurably degrades VAD and ASR (ARCHITECTURE §3)
-- [ ] Batch to 20–100 ms before crossing IPC. Never post per 128-frame quantum (~375 msg/s)
-- [ ] `postMessage` with transferable `ArrayBuffer` — `send`/`invoke` cannot transfer, and 1 MB over IPC costs ~70 ms (UI.md §0)
-- [ ] Record `startOffsetMs` per track — the two recorders never start on the same instant
-- [ ] **Liveness check** using `LIVENESS_CHECK_MS`: if peak is exactly zero for the first seconds, tear down and restart raw
-- [ ] Handle mid-stream sample-rate change as a real event, not an impossibility (ARCHITECTURE §3)
+- [x] `getUserMedia` in the renderer; **AudioWorklet**, not `ScriptProcessorNode`
+- [x] Downsample to 16 kHz **with an anti-alias filter** — naive decimation folds HF noise into the speech band and measurably degrades VAD and ASR (ARCHITECTURE §3)
+- [x] Batch to 20–100 ms before crossing IPC. Never post per 128-frame quantum (~375 msg/s)
+- [x] `postMessage` with transferable `ArrayBuffer` — `send`/`invoke` cannot transfer, and 1 MB over IPC costs ~70 ms (UI.md §0)
+- [x] Record `startOffsetMs` per track — the two recorders never start on the same instant
+- [x] **Liveness check** using `LIVENESS_CHECK_MS`: if peak is exactly zero for the first seconds, tear down and restart raw
+- [x] Handle mid-stream sample-rate change as a real event, not an impossibility (ARCHITECTURE §3)
+
+### What the build actually found
+
+**A bare `ArrayBuffer` cannot cross contextBridge — and fails silently.**
+The checklist says to `postMessage` a transferable `ArrayBuffer`, and that is
+what the transport does — but the transfer has to happen **preload-side**, past
+the bridge. Passing a buffer *into* a contextBridge-exposed function delivers
+nothing to main, and `postMessage` accepts it without raising: every chunk
+arrives detached at zero bytes, producing a full-length recording of silence
+with a completely clean log. The renderer now hands over a `Float32Array`,
+which survives, and the preload rebuilds and transfers the buffer in its own
+realm. Cost is one 2.5 KB copy per 40 ms chunk.
+
+**AudioTee emits Int16, not Float32 — the system track was never valid.**
+Pre-existing, and not part of this phase's scope. Its README states that
+specifying *any* sample rate switches the encoding to 16-bit signed integers,
+and we always request 16 kHz. Decoded as Float32, the peak amplitude came back
+as `3.4e38` and the whole system track was noise — while still producing a
+plausible WAV of the right length, which is why it survived phase 2. A range
+check on the first buffer of every recording now turns this class of bug into
+an error instead of a silently ruined track.
+
+**Duration and discontinuities are tracked per track.** `TrackResult` carries
+`samples` and `discontinuities`, so duration comes from the sample count rather
+than wall clock, and suspends and device-rate changes are marked at the
+millisecond offset where they happened. `startOffsetMs` itself is computed by
+the recording controller in phase 4, from the `firstBufferAt` this phase
+records.
+
+**The WAV header is patched every 30 s**, not only at stop, so a crash leaves a
+playable truncated file. Backpressure is respected: past the stream's
+high-water mark buffers are dropped and marked rather than accumulated, because
+Node's docs are explicit that ignoring it produces RSS that is never returned.
+
+### Verification
+
+Two harnesses, both against the real code:
+
+*Resampler (Node, headless):* the shipped worklet loaded with stubbed
+`AudioWorkletGlobalScope` globals. 48 kHz, 44.1 kHz, 32 kHz and 16 kHz inputs;
+unity passband at 1 kHz, ≤1 ms drift over 2 s, no block-boundary
+discontinuity, and — the point of the exercise — **a 13 kHz tone rejected at
+−95 dB**. The control case matters: naive decimation folds that same tone into
+the speech band at 3 kHz at **0 dB**, full amplitude. Batching measured at 24–25
+messages/s against 375 `process()` calls, and `stop` verified to flush a
+partial chunk rather than drop the end of the meeting.
+
+*Capture path (real Electron, 21 checks):* `getUserMedia` → worklet → port →
+main → WAV, with `--use-fake-device-for-media-capture`. PCM reaches main
+(126 KB / 4 s), `firstBufferAt` agrees across processes to within 1 ms, level
+events at ~25/s, duration from sample count within 40 ms, header sizes correct,
+a second recording on the same objects clean, and the suspend marker landing at
+exactly 500 ms. Chromium's fake device turned out to emit low-level noise
+rather than a documented tone, so sample *fidelity* is proven separately by
+pushing a known 440 Hz tone through the same port: **all 32 000 samples
+arrived, amplitude 0.8000 as sent, 128 dB above the 1 kHz noise floor.** The
+system track now decodes to a peak of 0.088 rather than 3.4e38.
+
+Not yet covered: multi-hour recordings, a real device rate change (the rebuild
+path is exercised only by its watcher), and mic audio has not yet been run
+through ASR end to end — that arrives with the phase 4 controller.
 
 ---
 
-## Phase 4 — Recording controller
+## Phase 4 — Recording controller ✅
 
 *Ends in:* press record, speak, stop, get a transcript. **The app works.**
 
-- [ ] `RECORDING_START` / `RECORDING_STOP` / `RECORDING_STATE` handlers
-- [ ] Streaming WAV writer, both tracks, **respecting backpressure** — never hold a meeting in memory (ARCHITECTURE §3)
-- [ ] **Patch the WAV header every ~30 s**, not only on stop, so a crash leaves a playable file rather than a corrupt one
-- [ ] Write `meta.json` on clean stop — its presence is what marks the session complete and enqueues it
-- [ ] `powerSaveBlocker('prevent-app-suspension')` — *not* `prevent-display-sleep`
-- [ ] **Duration from sample count, never timer ticks.** OS suspend freezes the event loop and drops ticks
-- [ ] `powerMonitor` suspend/resume → mark discontinuities
-- [ ] Push `micLevel` / `systemLevel` at ~30 Hz as two floats (never buffers)
-- [ ] Wire the tray `toggle()` stub to this controller
-- [ ] Verify `resumePending()` actually drains on next launch
+- [x] `RECORDING_START` / `RECORDING_STOP` / `RECORDING_STATE` handlers
+- [x] Streaming WAV writer, both tracks, **respecting backpressure** — never hold a meeting in memory (ARCHITECTURE §3)
+- [x] **Patch the WAV header every ~30 s**, not only on stop, so a crash leaves a playable file rather than a corrupt one
+- [x] Write `meta.json` on clean stop — its presence is what marks the session complete and enqueues it
+- [x] Carry `discardAudio` from `RECORDING_START` into `meta.json`, defaulting from `Settings.discardAudioByDefault`, with the pre-record toggle in the UI
+- [x] `powerSaveBlocker('prevent-app-suspension')` — *not* `prevent-display-sleep`
+- [x] **Duration from sample count, never timer ticks.** OS suspend freezes the event loop and drops ticks
+- [x] `powerMonitor` suspend/resume → mark discontinuities
+- [x] Push `micLevel` / `systemLevel` at ~30 Hz as two floats (never buffers)
+- [x] Wire the tray `toggle()` stub to this controller
+- [x] Verify `resumePending()` actually drains on next launch
+
+### What the build actually found
+
+**The controller had to live in main and *drive* the renderer, not the other
+way round.** `getUserMedia` exists only in the renderer, so the obvious design
+is a renderer that owns recording and pushes audio down. That design cannot
+express this app: Oratio is a menu-bar app, the tray must be able to start a
+meeting with no window open, and closing the window mid-meeting must not end
+it. So main owns the recording and sends `MIC_START`/`MIC_STOP` to the
+renderer, which is reduced to a device driver for the one API main cannot
+reach. A window opened mid-meeting asks main whether it may take the mic
+(`RECORDING_CLAIM_MIC`) rather than deciding for itself — two windows both
+running `getUserMedia` would interleave two streams into one WAV, which is
+silently wrong rather than loudly broken.
+
+**The ASR worker path was still wrong, in a second way.** Phase 2 replaced
+`__dirname` with `app.getAppPath()` and that fixed the chunking trap — but
+`getAppPath()` is the project root under `electron-vite dev` and `out/main`
+when the built output is launched directly, so the join produced
+`out/main/out/main/asr.cjs`. It worked in `pnpm dev` and nowhere else, which is
+why phase 2 could not have caught it: phase 4 is the first thing to run the
+worker outside the dev server. Both layouts are now tried, and the error names
+every path it looked in rather than reporting one.
+
+**`startOffsetMs` is not a formality.** Measured across a real recording, the
+mic and the system tap started **85 ms apart** — two independent subsystems
+with different startup costs, exactly as ARCHITECTURE §3 predicted. Assuming
+zero would put every "me" line 85 ms out against every "them" line.
+
+**Elapsed time is pushed, not counted.** `RecordButton` previously accumulated
+`setElapsed(e => e + 1)` on an interval, which a backgrounded renderer throttles
+to once a minute — and a menu-bar app during a meeting is backgrounded almost
+by definition. The counter now reads `elapsedSeconds` from the pushed
+`RecordingState`. That is deliberately wall-clock, unlike the duration in
+`meta.json`: a person watching a timer expects to see time that passed,
+including a suspend, while the file must match the audio.
+
+### Verification
+
+*Real Electron, 59 checks, all passing.* Headless for the controller and the
+system tap; with a window and `--use-fake-device-for-media-capture` for the mic.
+
+`buildMeta` is pure, so it is checked exhaustively: duration taken from sample
+count where the wall clock says 60 s and the audio says 10 s; the earlier track
+anchoring at 0 whichever track it is; a track that captured nothing omitted
+rather than handed to VAD as an empty WAV; `discardAudio: false` written as
+*absent* so pre-existing sessions still mean keep; and no NaN when both tracks
+are empty.
+
+Live: `meta.json` provably absent while recording and present after, a second
+`start()` refused, `stop()` while idle returning null rather than throwing, RIFF
+and data sizes matching the bytes on disk, and the declared duration agreeing
+with the sample count within half a second.
+
+**The exit criterion, met end to end:** speech played through the system output,
+captured by the tap, transcribed locally by Moonshine, and written to
+`transcript.json` as *"Quarterly report is due on friday"* — attributed to
+`them` structurally, from which file it was in. With a window attached, both
+tracks record into one session and `startOffsetMs` comes out as a real measured
+85 ms.
+
+Also proven here rather than assumed: a session recorded with `discardAudio`
+loses both WAVs and keeps a non-empty transcript with `audioDiscardedAt`
+stamped; and a mid-recording WAV already carries a valid RIFF/WAVE header, so a
+force-quit leaves a playable file rather than one every tool reports as empty.
+
+Not yet covered: multi-hour recordings and a real device rate change (still
+only exercised through its watcher). Both belong to phase 10.
 
 ---
 
@@ -224,9 +350,10 @@ product — is half-built.
 
 *Ends in:* the app looks like the decision in UI.md §3a.
 
-**Fix first (both are live bugs):**
-- [ ] `RecordButton.tsx:12-16` accumulates `setElapsed(e => e + 1)` — a tick counter in a **background-throttled** renderer. It will drift. Read elapsed from `RecordingState` instead
-- [ ] `tray.ts:73` — re-render on `powerMonitor` resume so the counter doesn't freeze on screen after sleep
+**Fix first (both were live bugs — done in phase 4, since both were one-line
+consequences of wiring the controller):**
+- [x] `RecordButton.tsx:12-16` accumulates `setElapsed(e => e + 1)` — a tick counter in a **background-throttled** renderer. It will drift. Read elapsed from `RecordingState` instead
+- [x] `tray.ts:73` — re-render on `powerMonitor` resume so the counter doesn't freeze on screen after sleep
 
 **Then build J:**
 - [ ] Notes take full width; drawer at the bottom
@@ -259,7 +386,7 @@ product — is half-built.
 - [ ] Recent sessions in the menu → open the window at that session
 - [ ] **Settings item** — currently missing entirely
 - [ ] Template icon; opacity for state (35% idle, per Apple's disabled convention)
-- [ ] `setIgnoreDoubleClickEvents(true)`
+- [x] `setIgnoreDoubleClickEvents(true)` — done in phase 4: without it a double-click fires the menu item twice, and the second fire *stops* the recording the first just started
 - [ ] Global shortcut for start/stop, since macOS hides menu-bar extras when the bar is crowded
 
 ---

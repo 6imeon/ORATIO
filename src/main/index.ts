@@ -2,14 +2,18 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
+import { EVENTS } from '@shared/ipc'
 import { loadSettings } from './storage/settings'
 import { SearchIndex } from './storage/searchIndex'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
+import { registerMicPort } from './audio/micPort'
+import { RecordingController } from './recording/RecordingController'
 import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
-import { createTray } from './tray'
+import { readMeta, readTranscript } from './storage/vault'
+import { createTray, setRecordingState } from './tray'
 
 log.initialize()
 log.transports.file.level = 'info'
@@ -23,6 +27,83 @@ log.transports.file.level = 'info'
  */
 
 let mainWindow: BrowserWindow | null = null
+
+/** Set once `before-quit` has begun finalizing, so the second pass can proceed. */
+let quitting = false
+
+/**
+ * Push an event to every live renderer.
+ *
+ * Every window, not just `mainWindow`: state has to be correct in whatever
+ * window the user is looking at, and a destroyed WebContents throws on send
+ * rather than being a no-op.
+ */
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(channel, payload)
+    }
+  }
+}
+
+/**
+ * The WebContents currently responsible for the microphone.
+ *
+ * Exactly one, tracked explicitly rather than derived from window order.
+ * Two windows both running `getUserMedia` would push interleaved PCM down one
+ * port and produce a WAV that is silently wrong rather than loudly broken, and
+ * "the first window in the list" is not stable across a window being closed
+ * and reopened mid-meeting.
+ */
+let micOwnerId: number | null = null
+
+/**
+ * Ask the renderer to open or close the microphone.
+ *
+ * Returns false when there is no window to ask. That is a normal state for a
+ * menu-bar app — the tray can start a recording with nothing open — and it is
+ * reported rather than repaired: opening a window unbidden to capture audio is
+ * exactly the behaviour a meeting recorder should not have. System audio still
+ * records; the mic track is simply absent, and meta.json says so.
+ */
+function requestMic(start: boolean): boolean {
+  if (!start) {
+    const owner = micOwnerId
+    micOwnerId = null
+    if (owner === null) return false
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.id === owner)
+    if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(EVENTS.MIC_STOP)
+    }
+    return true
+  }
+
+  const target = BrowserWindow.getAllWindows().find(
+    (w) => !w.isDestroyed() && !w.webContents.isDestroyed(),
+  )
+  if (!target) {
+    micOwnerId = null
+    return false
+  }
+
+  micOwnerId = target.webContents.id
+  target.webContents.send(EVENTS.MIC_START)
+  return true
+}
+
+/**
+ * Hand the mic to a window that opened mid-recording.
+ *
+ * A meeting started from the tray with nothing open has no mic track. Opening
+ * the window then is a reasonable moment to start capturing one — the mic
+ * simply joins late, and `startOffsetMs` in meta.json already carries exactly
+ * that kind of gap between the two tracks.
+ */
+function claimMic(id: number): boolean {
+  if (micOwnerId !== null) return micOwnerId === id
+  micOwnerId = id
+  return true
+}
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -109,8 +190,57 @@ void app.whenReady().then(async () => {
     )
   })
 
-  registerIpc({ capture, queue, searchIndex, models, showMainWindow })
-  createTray({ capture, showMainWindow })
+  const recording = new RecordingController({
+    capture,
+    onSessionComplete: (dir) => queue.enqueue(dir),
+    broadcastState: (state) => broadcast(EVENTS.RECORDING_STATE, state),
+    requestMic: (start) => requestMic(start),
+  })
+
+  registerIpc({ capture, recording, queue, searchIndex, models, showMainWindow, claimMic })
+
+  // Registered once, not per recording: the renderer opens a fresh port for
+  // each session, and a page reload would otherwise leave main listening to a
+  // port nobody is writing to.
+  registerMicPort(capture)
+
+  const trayDeps = { recording, showMainWindow }
+  createTray(trayDeps)
+
+  // The tray shows a live elapsed counter, so it needs to know when recording
+  // starts and stops regardless of who asked — window, tray, or shortcut.
+  recording.on('started', () => setRecordingState(true, trayDeps))
+  recording.on('stopped', () => setRecordingState(false, trayDeps))
+
+  // A session becomes searchable when its transcript lands, not when it is
+  // recorded. The index is derived, so failing to index is not fatal — it can
+  // always be rebuilt by rescanning the vault.
+  queue.on('completed', (sessionId: string) => {
+    void indexSession(sessionId).catch((err) =>
+      log.warn('[app] could not index session', sessionId, err),
+    )
+    broadcast(EVENTS.SESSION_CHANGED, sessionId)
+  })
+
+  queue.on('progress', (p) => broadcast(EVENTS.TRANSCRIPTION_PROGRESS, p))
+
+  async function indexSession(sessionId: string): Promise<void> {
+    const current = await loadSettings()
+    const dir = join(current.vaultPath, sessionId)
+    const [meta, transcript] = await Promise.all([readMeta(dir), readTranscript(dir)])
+    if (!meta || !transcript) return
+    searchIndex.indexSession(sessionId, meta, transcript)
+  }
+
+  app.on('before-quit', (e) => {
+    // Quitting mid-meeting would otherwise leave two WAVs and no meta.json —
+    // a directory the queue is right to ignore, so the recording would be
+    // silently orphaned. Defer the quit just long enough to write it.
+    if (!recording.isRecording() || quitting) return
+    e.preventDefault()
+    quitting = true
+    void recording.shutdown().finally(() => app.quit())
+  })
 
   // Anything recorded but not transcribed — because the app quit or crashed
   // mid-job — is picked up here. The filesystem is the queue, so this needs

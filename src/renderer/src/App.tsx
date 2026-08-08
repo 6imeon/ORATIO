@@ -3,10 +3,16 @@ import type { Session } from '@shared/types'
 import { SessionList } from './components/SessionList'
 import { RecordButton } from './components/RecordButton'
 import { MeetingView } from './pages/MeetingView'
+import { useMicCapture } from './hooks/useMicCapture'
 
 export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [micError, setMicError] = useState<string | null>(null)
+
+  // Mounted at the root, not inside the record button: main decides when to
+  // record, and this window's mic must keep running whatever the UI is showing.
+  useMicCapture((err) => setMicError(err.message))
 
   useEffect(() => {
     void refresh()
@@ -24,6 +30,16 @@ export function App(): React.JSX.Element {
         <div className="h-11 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
         <div className="px-3 pb-3">
           <RecordButton onStopped={refresh} />
+          {/*
+            A denied mic prompt is a normal outcome, not a crash — the system
+            track keeps recording, so the meeting is still captured minus your
+            own voice. Saying so beats a silent half-recording.
+          */}
+          {micError && (
+            <p className="mt-2 px-1 text-xs text-amber-600 dark:text-amber-500">
+              Microphone unavailable — recording the other side only. {micError}
+            </p>
+          )}
         </div>
         <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
       </aside>

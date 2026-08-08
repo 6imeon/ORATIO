@@ -7,6 +7,7 @@ import type { SessionMeta, Transcript, TranscriptSegment } from '@shared/types'
 import type { TranscriptionProgress } from '@shared/ipc'
 import type { TranscriptionEngine } from './TranscriptionEngine'
 import { isLikelyHallucination } from './vad'
+import { discardSessionAudio, hasAudio, readMeta } from '../storage/vault'
 
 /**
  * Serial queue of sessions awaiting transcription.
@@ -59,17 +60,41 @@ export class TranscriptionQueue extends EventEmitter {
       return
     }
 
-    const pending = entries
-      .map((name) => join(this.vaultPath, name))
-      .filter(
-        (dir) =>
-          existsSync(join(dir, 'meta.json')) && !existsSync(join(dir, 'transcript.json')),
-      )
-      .sort()
+    const dirs = entries.map((name) => join(this.vaultPath, name)).sort()
+
+    const pending = dirs.filter(
+      (dir) => existsSync(join(dir, 'meta.json')) && !existsSync(join(dir, 'transcript.json')),
+    )
 
     if (pending.length > 0) {
       log.info(`[queue] resuming ${pending.length} untranscribed session(s)`)
       for (const dir of pending) this.enqueue(dir)
+    }
+
+    // Finish any audio deletion that was promised but not completed.
+    //
+    // Without this the guarantee has a permanent hole: a crash between writing
+    // transcript.json and unlinking the WAVs leaves a session that
+    // resumePending will never look at again — it has a transcript, so it is
+    // done — and the audio the user asked us to discard stays on disk forever.
+    // Cheap to re-check, and it is the only place that hole can be closed.
+    await this.#sweepDiscarded(dirs)
+  }
+
+  async #sweepDiscarded(dirs: string[]): Promise<void> {
+    for (const dir of dirs) {
+      if (!existsSync(join(dir, 'transcript.json')) || !hasAudio(dir)) continue
+
+      const meta = await readMeta(dir)
+      if (!meta?.discardAudio) continue
+
+      try {
+        await discardSessionAudio(dir)
+        log.info(`[queue] discarded leftover audio for ${meta.id}`)
+        await this.#log(dir, 'audio discarded on relaunch (interrupted earlier)')
+      } catch (err) {
+        log.warn(`[queue] could not discard audio for ${meta.id}`, err)
+      }
     }
   }
 
@@ -182,6 +207,29 @@ export class TranscriptionQueue extends EventEmitter {
     await rename(tmp, join(dir, 'transcript.json'))
 
     await this.#log(dir, `done — ${merged.length} segments`)
+
+    // Ordered after the transcript is on disk, never before: the audio is the
+    // only copy of the meeting until the transcript exists, so deleting it
+    // first would turn one failed job into a lost meeting.
+    //
+    // Re-read rather than reusing the `meta` from the top of this method:
+    // transcription can take minutes, and the flag must reflect what the file
+    // says now. `discardSessionAudio` writes to the same file, so acting on a
+    // stale copy would also risk clobbering it.
+    const current = (await readMeta(dir)) ?? meta
+    if (current.discardAudio) {
+      try {
+        await discardSessionAudio(dir)
+        await this.#log(dir, 'audio discarded at user request (discardAudio)')
+      } catch (err) {
+        // Left for the next launch rather than escalated: the transcript is
+        // already safe, and resumePending re-checks. Failing the job here
+        // would re-run a completed transcription.
+        await this.#log(dir, `could not discard audio: ${err}`)
+        log.warn(`[queue] ${sessionId} audio discard failed`, err)
+      }
+    }
+
     this.emit('completed', sessionId)
   }
 
