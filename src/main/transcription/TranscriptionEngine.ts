@@ -1,5 +1,26 @@
 import type { ModelId } from '@shared/types'
 
+/**
+ * MUST be passed to every sherpa-onnx call that accepts it.
+ *
+ * sherpa defaults `enableExternalBuffer` to `true`, which makes it hand back
+ * an ArrayBuffer pointing at externally-allocated memory. Electron 21+ runs
+ * V8's memory cage and forbids exactly that:
+ *
+ *   sherpa.readWave(path, true)  -> Error: External buffers are not allowed
+ *   sherpa.readWave(path, false) -> 32000 samples
+ *
+ * Measured on Electron 43.2.0 / sherpa-onnx-node 1.13.4.
+ *
+ * This is not a corner case: vad.js defaults it to `true` in BOTH get() and
+ * front(), and VAD is mandatory here — so the default-argument version of
+ * this pipeline throws on every recording. The cost of `false` is one buffer
+ * copy, which is noise next to inference time.
+ *
+ * See docs/ARCHITECTURE.md §1.1.
+ */
+export const SHERPA_EXTERNAL_BUFFER = false
+
 export interface RawSegment {
   /** Seconds from the start of THIS track. */
   start: number

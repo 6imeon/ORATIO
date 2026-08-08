@@ -61,6 +61,22 @@ export class OllamaProvider implements AIProvider {
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: buildUserPrompt(input) },
         ],
+        options: {
+          // Ollama defaults num_ctx to 2048 and SILENTLY TRUNCATES anything
+          // longer — from the front. A 25-minute meeting already exceeds
+          // that, so the default would summarise only the tail of the
+          // conversation while reporting complete success. No error is
+          // raised anywhere in the stack; the summary is simply wrong about
+          // everything that was said early on.
+          //
+          // 32k covers roughly two hours of speech. Past that we would need
+          // to chunk, which is tracked as an open question rather than
+          // guessed at.
+          num_ctx: 32_768,
+          // Summarisation is extraction, not composition. Low temperature
+          // measurably reduces invented specifics.
+          temperature: 0.2,
+        },
       }),
     })
 

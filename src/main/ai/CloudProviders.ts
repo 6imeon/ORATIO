@@ -40,7 +40,12 @@ export class AnthropicProvider implements AIProvider {
     const stream = client.messages.stream(
       {
         model: this.model,
-        max_tokens: 4096,
+        // The Discussion section is deliberately the longest part of the
+        // output, and under-summarising is the dominant failure mode in
+        // meeting notes — so the ceiling has to leave room for a thorough
+        // record of a long meeting.
+        max_tokens: 8192,
+        temperature: 0.2,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: buildUserPrompt(input) }],
       },
@@ -81,6 +86,8 @@ export class OpenAIProvider implements AIProvider {
       {
         model: this.model,
         stream: true,
+        max_completion_tokens: 8192,
+        temperature: 0.2,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: buildUserPrompt(input) },
