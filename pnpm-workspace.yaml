@@ -30,3 +30,31 @@ onlyBuiltDependencies:
   - better-sqlite3
   - electron
   - esbuild
+
+# Install sherpa-onnx's Windows binaries alongside the host platform's.
+#
+# `sherpa-onnx-node` already declares sherpa-onnx-win-x64 and -win-ia32 in its
+# own optionalDependencies, so nothing is missing from the dependency graph —
+# pnpm simply filters optional deps by the *installing* platform, and a macOS
+# install never fetches them. This asks for them anyway, which is what the
+# release build's "sherpa-onnx-win-* is not installed" warning is about.
+#
+# Declared here rather than added to our own `optionalDependencies`: pinning a
+# version alongside sherpa's `^1.13.4` would silently drift out of step on the
+# next sherpa upgrade, and CLAUDE.md already requires re-verifying sherpa on
+# every upgrade.
+#
+# `current` is required, not implied — omitting it would drop the host's own
+# darwin-arm64 binary and break local development entirely.
+#
+# There is deliberately no win32/arm64 entry: sherpa publishes no
+# sherpa-onnx-win-arm64 package, and addon-static-import.js maps arm64 to
+# darwin and linux only. Windows on ARM therefore has no local ASR path at all
+# — see docs/WINDOWS.md §7.
+supportedArchitectures:
+  os:
+    - current
+    - win32
+  cpu:
+    - current
+    - x64

@@ -2,8 +2,12 @@
  * Platform-agnostic capture contract.
  *
  * macOS is the only implementation today. Windows lands later behind this
- * same interface (WASAPI process loopback, which is actually better — it can
- * capture a single process, so you record Zoom without recording Spotify).
+ * same interface, via WASAPI process loopback — which captures a process
+ * *tree*, include or exclude, pre-mixer, with no permission at all. Better
+ * than Core Audio on every axis, but gated on Windows 10 build 20348; see
+ * docs/WINDOWS.md for the floor, the fallback, and why exclude-mode is the
+ * default.
+ *
  * Nothing above this file may reference Core Audio, AudioTee, or `.caf`.
  */
 
@@ -70,6 +74,36 @@ export interface AudioCapture {
   stop(): Promise<CaptureResult>
   on<K extends keyof CaptureEvents>(event: K, listener: CaptureEvents[K]): void
   off<K extends keyof CaptureEvents>(event: K, listener: CaptureEvents[K]): void
+
+  /**
+   * Mic PCM pushed in from outside the capture — mono Float32 at
+   * TARGET_SAMPLE_RATE, already resampled by the renderer's AudioWorklet.
+   *
+   * Part of the shared contract rather than a macOS detail: the mic comes from
+   * `getUserMedia` in the renderer on *every* platform, because a menu-bar app
+   * has no window to hold it. Only the system track is platform-specific.
+   *
+   * These four methods were originally only on `MacAudioCapture`, which forced
+   * four call sites to import the concrete class and would have made a second
+   * implementation impossible to substitute. None of them are Core Audio
+   * concepts; the interface was simply incomplete.
+   */
+  pushMicPcm(samples: Float32Array): void
+
+  /**
+   * The mic's audio graph was lost and rebuilt — a device rate change. Marks a
+   * gap so the merged timeline does not treat the two halves as contiguous.
+   */
+  noteMicDiscontinuity(): void
+
+  /** The mic stream ended. The system track may still be recording. */
+  noteMicEnded(): void
+
+  /**
+   * `powerMonitor` reported a suspend. Both tracks will have a hole no sample
+   * count can reveal afterwards, so it has to be marked as it happens.
+   */
+  noteSuspend(): void
 }
 
 /** Sample rate every downstream consumer can rely on. sherpa-onnx wants 16k. */

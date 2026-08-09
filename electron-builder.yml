@@ -34,6 +34,28 @@ asarUnpack:
   - 'resources/audio-processes'
 
 mac:
+  # Ship only the sherpa binary this target can actually load.
+  #
+  # `supportedArchitectures` in pnpm-workspace.yaml installs the Windows
+  # binaries so the Windows port can be built, but its `os` and `cpu` lists are
+  # applied as a CROSS PRODUCT — asking for win32+x64 unavoidably also matches
+  # darwin+x64. On this arm64-only DMG that silently added 65 MB of Intel-macOS
+  # dylibs, taking the installer from 146 MB to 165 MB. Nothing warns about it;
+  # the build simply gets bigger, which is exactly the kind of regression
+  # nobody goes looking for.
+  #
+  # Filtered here rather than by narrowing the pnpm setting because `cpu:
+  # [current]` drops sherpa-onnx-win-x64 too — verified — and the Windows port
+  # needs it present. The build target is the only place that knows which
+  # single binary is loadable.
+  #
+  # `sherpa-onnx-node/addon.js` resolves `sherpa-onnx-${platform}-${arch}` at
+  # runtime, so an absent directory is never reached on a matching host. A
+  # Windows target will need the mirror image of this list.
+  files:
+    - '!**/node_modules/sherpa-onnx-win-*/**'
+    - '!**/node_modules/sherpa-onnx-linux-*/**'
+    - '!**/node_modules/sherpa-onnx-darwin-x64/**'
   category: public.app-category.productivity
   # Stated explicitly rather than relying on the buildResources convention.
   # A missing icon does not fail the build — it silently ships the default

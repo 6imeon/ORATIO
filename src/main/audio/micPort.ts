@@ -1,7 +1,7 @@
 import { ipcMain, type MessagePortMain } from 'electron'
 import log from 'electron-log/main'
 import { AUDIO_PORT_CHANNEL, extractPcm, type AudioPortMessage } from '@shared/audioPort'
-import type { MacAudioCapture } from './MacAudioCapture'
+import type { AudioCapture } from './AudioCapture'
 
 /**
  * Receives mic PCM from the renderer over a transferred MessagePort.
@@ -11,7 +11,7 @@ import type { MacAudioCapture } from './MacAudioCapture'
  * mid-recording is otherwise invisible here, and the old port would sit
  * around delivering nothing while the new one is ignored.
  */
-export function registerMicPort(capture: MacAudioCapture): void {
+export function registerMicPort(capture: AudioCapture): void {
   let active: MessagePortMain | null = null
 
   ipcMain.on(AUDIO_PORT_CHANNEL, (e) => {
@@ -47,7 +47,7 @@ export function registerMicPort(capture: MacAudioCapture): void {
   })
 }
 
-function handleControl(msg: AudioPortMessage, capture: MacAudioCapture): void {
+function handleControl(msg: AudioPortMessage, capture: AudioCapture): void {
   switch (msg?.type) {
     case 'hello':
       log.info('[audio] mic stream opened', { deviceRate: msg.deviceRate })

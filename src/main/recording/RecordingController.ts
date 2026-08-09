@@ -4,8 +4,7 @@ import { powerMonitor, powerSaveBlocker } from 'electron'
 import log from 'electron-log/main'
 import type { SessionMeta, RecordingState, TrackMeta } from '@shared/types'
 import type { StartRecordingOptions, StartRecordingResult } from '@shared/ipc'
-import { TARGET_SAMPLE_RATE, type CaptureResult } from '../audio/AudioCapture'
-import type { MacAudioCapture } from '../audio/MacAudioCapture'
+import { TARGET_SAMPLE_RATE, type AudioCapture, type CaptureResult } from '../audio/AudioCapture'
 import { createSessionDir, writeMeta, FILES } from '../storage/vault'
 import { loadSettings } from '../storage/settings'
 import { writeCaptureHealth } from '../storage/captureHealth'
@@ -37,7 +36,7 @@ import { writeCaptureHealth } from '../storage/captureHealth'
 const STATE_PUSH_INTERVAL_MS = 33
 
 export interface RecordingControllerDeps {
-  capture: MacAudioCapture
+  capture: AudioCapture
   /** Called with the finished session directory, to enqueue transcription. */
   onSessionComplete: (dir: string) => void
   /** Push a state frame to every live renderer. */

@@ -24,7 +24,7 @@ import {
 } from '@shared/ipc'
 import { MODELS } from '@shared/models'
 import type { KeyedProviderId, ModelId, Settings } from '@shared/types'
-import type { MacAudioCapture } from '../audio/MacAudioCapture'
+import type { AudioCapture } from '../audio/AudioCapture'
 import type { RecordingController } from '../recording/RecordingController'
 import type { TranscriptionQueue } from '../transcription/TranscriptionQueue'
 import type { IndexClient } from '../storage/IndexClient'
@@ -48,7 +48,7 @@ import { listRunningApps } from '../audio/excludedApps'
 import { loadSettings, saveSettings, setApiKey, hasApiKey } from '../storage/settings'
 
 interface Deps {
-  capture: MacAudioCapture
+  capture: AudioCapture
   recording: RecordingController
   queue: TranscriptionQueue
   searchIndex: IndexClient

@@ -620,6 +620,19 @@ for what has to land first.
 
 ### Changed
 
+- **Groundwork for a Windows build**, with no change to how the app behaves on
+  macOS. The audio-capture interface now declares the four microphone methods
+  that previously existed only on the macOS implementation, so nothing outside
+  the audio layer depends on a specific platform any more, and sherpa-onnx's
+  Windows binaries are installed alongside the macOS ones.
+
+  The macOS installer is unchanged at 146 MB. Getting there needed a deliberate
+  build filter: asking pnpm for the Windows binaries also pulls the Intel-macOS
+  ones, which had quietly added 19 MB to an Apple-Silicon-only download.
+
+  See [docs/WINDOWS.md](docs/WINDOWS.md) for the phased plan. Windows itself is
+  not buildable yet — this is phase W1 of five.
+
 - **Summarisation now optimises for completeness.** The previous prompt asked
   for short sections and bullets, which pushed toward the single most common
   defect in machine-written meeting notes. Speaker labels are now declared

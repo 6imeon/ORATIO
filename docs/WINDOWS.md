@@ -298,17 +298,43 @@ non-Store path buys instant trust.
 Worth doing regardless of whether Windows ships. Pure refactor, fully
 verifiable on macOS.
 
-- [ ] Add `pushMicPcm`, `noteMicDiscontinuity`, `noteMicEnded`, `noteSuspend` to the `AudioCapture` interface
-- [ ] Switch `RecordingController`, `ipc/index.ts` and `micPort.ts` to import the interface, not `MacAudioCapture`
-- [ ] Keep the concrete type only at the construction site in `index.ts`
-- [ ] Add `sherpa-onnx-win-*` to `optionalDependencies`
-- [ ] Confirm no `process.platform` branch has crept in above `src/main/audio/`
+- [x] Add `pushMicPcm`, `noteMicDiscontinuity`, `noteMicEnded`, `noteSuspend` to the `AudioCapture` interface
+- [x] Switch `RecordingController`, `ipc/index.ts` and `micPort.ts` to import the interface, not `MacAudioCapture`
+- [x] Keep the concrete type only at the construction site in `index.ts`
+- [x] ~~Add `sherpa-onnx-win-*` to `optionalDependencies`~~ — **done differently.** `sherpa-onnx-node` already declares the win packages in its *own* `optionalDependencies`; pnpm was filtering them by install platform, not missing them. Adding our own copy would pin a version alongside sherpa's `^1.13.4` and drift on the next upgrade. Used `supportedArchitectures` in `pnpm-workspace.yaml` instead.
+- [x] Confirm no `process.platform` branch has crept in above `src/main/audio/` — zero found
 
 ### Verification
 
-- [ ] `pnpm typecheck` clean
-- [ ] Record on macOS, mic and system tracks unchanged — this phase must be behaviour-neutral
-- [ ] `grep` shows no `MacAudioCapture` import outside `src/main/audio/` and `index.ts`
+- [x] `pnpm typecheck` clean
+- [x] `grep` shows no `MacAudioCapture` import outside `src/main/audio/` and `index.ts`
+- [x] macOS DMG still builds, sherpa still loads from the packaged bundle, and the installer is **still 146 MB** (see the size trap below)
+- [x] App boots clean on macOS through the refactored interface — worker ready, IPC registered, vault resolved, index reconciled
+- [ ] **Record on macOS, mic and system tracks unchanged.** Still outstanding: it needs a click-through of the mic permission prompt and a real meeting, which cannot be driven headlessly. Everything above it is automated and passing, so this is the one item carried into W2.
+
+### What W1 turned up
+
+Three findings the plan did not anticipate, all worth keeping:
+
+1. **`supportedArchitectures` is a cross product, and it silently inflates the
+   build.** `os: [current, win32]` with `cpu: [current, x64]` does not mean
+   "win32+x64 and the host" — it matches *every* combination, including
+   **darwin+x64**, which added 65 MB of Intel-macOS dylibs to an arm64-only DMG
+   and took the installer from 146 MB to **165 MB**. Nothing warns; the build
+   just gets bigger. Narrowing to `cpu: [current]` is not a fix — verified that
+   it drops `sherpa-onnx-win-x64` as well. The filter therefore belongs in
+   `electron-builder.yml` under `mac.files`, which is the only place that knows
+   which single binary the target can load. **A Windows target will need the
+   mirror image of that list.**
+2. **Windows on ARM has no local ASR path at all.** There is no
+   `sherpa-onnx-win-arm64` on npm (checked directly against the registry), and
+   `sherpa-onnx-node/addon-static-import.js` maps `arm64` to darwin and linux
+   only. Since transcription-is-local is an invariant, **Windows ARM cannot be
+   a target** until upstream ships that binary — it is not a degraded mode, it
+   is no mode. Worth deciding before W5, not during it.
+3. **`sherpa-onnx-win-ia32` is still reported missing** by the release build,
+   and deliberately so: `cpu` omits `ia32` because a 32-bit Electron target is
+   not planned. The warning is expected output, not an outstanding task.
 
 ---
 
