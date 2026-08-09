@@ -38,6 +38,16 @@ export const IPC = {
    */
   SESSION_REINDEX: 'session:reindex',
 
+  /**
+   * Write one meeting to a file the user picks.
+   *
+   * Main owns this end to end — the save dialog, the vault reads and the write
+   * — because the renderer has no filesystem access by design. Resolves with
+   * the chosen path, or null when the user cancelled, which is a normal outcome
+   * and not an error.
+   */
+  SESSION_EXPORT: 'session:export',
+
   // Audio playback — the differentiator: click a transcript line, hear it
   SESSION_AUDIO_URL: 'session:audio:url',
   /** Delete a session's audio, keeping its transcript and notes. */
@@ -224,6 +234,27 @@ export interface StoredSummary {
   sections: Partial<Record<SummarySection, string>>
   generatedAt: string | null
   provider: string | null
+}
+
+/**
+ * The formats a meeting can be exported to.
+ *
+ * Declared in shared for the same reason as the section names: the menu in the
+ * renderer and the writer in main have to agree, and a duplicated union is a
+ * drift waiting to happen. `FORMATS` in main carries the labels and extensions.
+ */
+export const EXPORT_FORMATS = ['md', 'txt', 'pdf', 'docx', 'srt', 'vtt', 'json'] as const
+
+export type ExportFormat = (typeof EXPORT_FORMATS)[number]
+
+export interface ExportRequest {
+  sessionId: string
+  format: ExportFormat
+  /**
+   * Append the full transcript after the notes. Only meaningful for the
+   * document formats — the subtitle and JSON formats ARE the transcript.
+   */
+  includeTranscript: boolean
 }
 
 export interface PermissionState {

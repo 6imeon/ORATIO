@@ -80,25 +80,109 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async *summarize(input: SummarizeInput, signal?: AbortSignal): AsyncIterable<string> {
-    const client = new OpenAI({ apiKey: this.apiKey })
-
-    const stream = await client.chat.completions.create(
-      {
-        model: this.model,
-        stream: true,
-        max_completion_tokens: 8192,
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: buildUserPrompt(input) },
-        ],
-      },
-      { signal },
+    yield* streamChatCompletion(
+      new OpenAI({ apiKey: this.apiKey }),
+      this.model,
+      input,
+      signal,
     )
+  }
+}
 
-    for await (const chunk of stream) {
-      const token = chunk.choices[0]?.delta?.content
-      if (token) yield token
-    }
+/** Where OpenRouter's OpenAI-compatible endpoint lives. */
+export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+
+/**
+ * OpenRouter — one key, most models.
+ *
+ * Worth having as its own entry rather than telling people to point the OpenAI
+ * provider at a different base URL: it is the option that lets someone use
+ * Gemini, Llama, DeepSeek or a model released next month without this project
+ * shipping an SDK for each, and hiding that behind a URL field nobody finds is
+ * the same as not having it.
+ *
+ * The API is OpenAI-compatible, so the streaming path is shared verbatim
+ * — a second copy would be a second place for the abort handling to drift.
+ * Two things differ and both are real:
+ *
+ *   1. Models are addressed as `vendor/model` slugs. A bare `gpt-5-mini` is a
+ *      404 here, which is why the settings copy shows the slug form.
+ *   2. It reads optional `HTTP-Referer` and `X-Title` headers to attribute
+ *      traffic on their dashboards. Sending a name is the polite thing to do
+ *      and costs nothing; it identifies the app, not the user.
+ */
+export class OpenRouterProvider implements AIProvider {
+  readonly id = 'openrouter' as const
+
+  constructor(
+    private readonly apiKey: string,
+    private readonly model: string = 'anthropic/claude-haiku-4.5',
+    private readonly baseUrl: string = OPENROUTER_BASE_URL,
+  ) {}
+
+  async isAvailable(): Promise<boolean> {
+    return this.apiKey.length > 0
+  }
+
+  /**
+   * A short, opinionated shortlist rather than the ~300 models OpenRouter
+   * offers. The full catalogue is a searchable web page and this is a
+   * dropdown in a settings pane; the field stays editable, so anything not
+   * listed is still one paste away.
+   */
+  async listModels(): Promise<string[]> {
+    return [
+      'anthropic/claude-haiku-4.5',
+      'anthropic/claude-sonnet-5',
+      'openai/gpt-5-mini',
+      'google/gemini-2.5-flash',
+      'meta-llama/llama-4-maverick',
+      'deepseek/deepseek-chat-v3.1',
+    ]
+  }
+
+  async *summarize(input: SummarizeInput, signal?: AbortSignal): AsyncIterable<string> {
+    const client = new OpenAI({
+      apiKey: this.apiKey,
+      baseURL: this.baseUrl,
+      defaultHeaders: {
+        'HTTP-Referer': 'https://github.com/6imeon/oratio',
+        'X-Title': 'Oratio',
+      },
+    })
+    yield* streamChatCompletion(client, this.model, input, signal)
+  }
+}
+
+/**
+ * The OpenAI chat-completions streaming loop, shared by every provider that
+ * speaks that dialect.
+ *
+ * `max_completion_tokens` rather than the deprecated `max_tokens`: the newer
+ * models reject the old name outright.
+ */
+async function* streamChatCompletion(
+  client: OpenAI,
+  model: string,
+  input: SummarizeInput,
+  signal?: AbortSignal,
+): AsyncIterable<string> {
+  const stream = await client.chat.completions.create(
+    {
+      model,
+      stream: true,
+      max_completion_tokens: 8192,
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: buildUserPrompt(input) },
+      ],
+    },
+    { signal },
+  )
+
+  for await (const chunk of stream) {
+    const token = chunk.choices[0]?.delta?.content
+    if (token) yield token
   }
 }

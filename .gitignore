@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+# Packaged builds — DMGs are hundreds of MB and are rebuilt from source
+release/
 .DS_Store
 *.log
 

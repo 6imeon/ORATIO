@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { app, safeStorage } from 'electron'
 import log from 'electron-log/main'
-import type { ProviderId, Settings } from '@shared/types'
+import type { ProviderConfig, ProviderId, Settings } from '@shared/types'
 import { DEFAULT_MODEL } from '@shared/models'
 
 /**
@@ -23,13 +23,29 @@ export function defaultSettings(): Settings {
     // should be able to find them without being told where to look.
     vaultPath: join(app.getPath('home'), 'Documents', 'Oratio'),
     activeModel: DEFAULT_MODEL,
+    // Follow macOS unless told otherwise. An app that picks its own appearance
+    // on first launch is an app that looks broken next to everything else on
+    // the screen.
+    theme: 'system',
     vadEnabled: true,
+    // On by default: recording through speakers is the common case for a
+    // laptop, and the failure it fixes — being transcribed saying what the
+    // other person said — is one users cannot diagnose for themselves.
+    removeSpeakerBleed: true,
     discardAudioByDefault: false,
     launchAtLogin: false,
     providers: [
       { id: 'ollama', enabled: true, model: 'qwen3:4b', baseUrl: 'http://127.0.0.1:11434' },
       { id: 'anthropic', enabled: false, model: 'claude-haiku-4-5-20251001' },
       { id: 'openai', enabled: false, model: 'gpt-5-mini' },
+      // OpenRouter addresses models as vendor/model slugs, so the default
+      // carries the vendor prefix — a bare name is a 404 on their API.
+      {
+        id: 'openrouter',
+        enabled: false,
+        model: 'anthropic/claude-haiku-4.5',
+        baseUrl: 'https://openrouter.ai/api/v1',
+      },
     ],
     activeProvider: null,
   }
@@ -41,7 +57,32 @@ export async function loadSettings(): Promise<Settings> {
     const raw = await readFile(settingsPath(), 'utf8')
     // Merge over defaults so a settings file written by an older version
     // never leaves new keys undefined.
-    settings = { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) }
+    const saved = JSON.parse(raw) as Partial<Settings>
+    settings = { ...defaultSettings(), ...saved, providers: mergeProviders(saved.providers) }
+
+    /**
+     * Persist a provider-list migration immediately.
+     *
+     * Without this the merge is correct but invisible on disk: settings.json
+     * is only written when the user changes something, so a file that predates
+     * a new provider keeps describing the old world indefinitely. That gap is
+     * confusing to anyone inspecting the file, and it means the migration is
+     * re-derived on every single load rather than once.
+     *
+     * Compared by id, not by deep equality — the goal is to catch a provider
+     * appearing or disappearing, not to rewrite the file whenever a default
+     * model string changes underneath a user who has their own.
+     */
+    const before = (saved.providers ?? []).map((p) => p?.id).join(',')
+    const after = settings.providers.map((p) => p.id).join(',')
+    if (before !== after) {
+      log.info('[settings] provider list migrated', { before, after })
+      // Deliberately not awaited: this is housekeeping, and a failure to write
+      // must not stop the app loading. The in-memory value is already correct.
+      void saveSettings(settings).catch((err) =>
+        log.warn('[settings] could not persist provider migration', err),
+      )
+    }
   } catch {
     settings = defaultSettings()
   }
@@ -53,6 +94,35 @@ export async function loadSettings(): Promise<Settings> {
   if (override) settings = { ...settings, vaultPath: override }
 
   return settings
+}
+
+/**
+ * Reconcile the saved provider list against the built-in one.
+ *
+ * A spread merge only fills in missing TOP-LEVEL keys. `providers` is an array
+ * and every saved file already has one, so it was taken wholesale — which meant
+ * a provider added in a later version was invisible to everyone who had ever
+ * opened the app. OpenRouter shipped and simply did not appear; the only way to
+ * see it was to delete settings.json.
+ *
+ * Merged per id, in the built-in order:
+ *   - a provider the user has configured keeps their model, URL and enabled
+ *     flag, because those are their choices and an upgrade must not reset them
+ *   - a provider they have never seen is added from defaults
+ *   - a provider WE no longer ship is dropped, so a removed integration does
+ *     not linger in the UI as an option that cannot work
+ *
+ * Order comes from the defaults rather than the saved file, so the list reads
+ * the same on every Mac and a new entry appears where it was designed to.
+ */
+function mergeProviders(saved: ProviderConfig[] | undefined): ProviderConfig[] {
+  const builtIn = defaultSettings().providers
+  if (!Array.isArray(saved)) return builtIn
+
+  return builtIn.map((base) => {
+    const match = saved.find((p) => p?.id === base.id)
+    return match ? { ...base, ...match } : base
+  })
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {

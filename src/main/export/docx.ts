@@ -1,0 +1,191 @@
+import {
+  AlignmentType,
+  Document,
+  HeadingLevel,
+  Packer,
+  Paragraph,
+  TextRun,
+} from 'docx'
+import type { ExportSource } from './formats'
+import { SUMMARY_SECTIONS } from '../ai/AIProvider'
+import { clock, speakerName } from './formats'
+
+/**
+ * A meeting as a real Word document.
+ *
+ * Built from the same content as the Markdown and PDF exports, but through
+ * OOXML rather than through HTML — so the headings are Word headings that
+ * appear in its navigation pane, the bullets are Word lists, and the document
+ * is editable rather than a rendering of one.
+ *
+ * `Packer.toBuffer` is the Node path (`toBlob` is the browser one) and needs no
+ * DOM, which is what lets this run in main.
+ */
+
+/**
+ * The inline Markdown subset, as Word runs.
+ *
+ * Same constructs as `Markdown.tsx` and `html.ts` — bold, italic, code — but
+ * emitted as `TextRun`s with formatting flags instead of tags. A model writing
+ * `**Them** — send the docs` has to produce a bold "Them" in Word too, or the
+ * action-item list arrives full of asterisks.
+ */
+const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\n]+\*)|(_[^_\n]+_)/g
+
+function runs(text: string): TextRun[] {
+  const out: TextRun[] = []
+  let last = 0
+
+  for (const m of text.matchAll(INLINE)) {
+    const at = m.index
+    if (at > last) out.push(new TextRun(text.slice(last, at)))
+
+    const token = m[0]
+    if (m[1]) {
+      out.push(new TextRun({ text: token.slice(1, -1), font: 'Menlo', size: 20 }))
+    } else if (m[2]) {
+      out.push(new TextRun({ text: token.slice(2, -2), bold: true }))
+    } else {
+      out.push(new TextRun({ text: token.slice(1, -1), italics: true }))
+    }
+    last = at + token.length
+  }
+
+  if (last < text.length) out.push(new TextRun(text.slice(last)))
+  // Never return an empty array: a Paragraph with no runs is a valid but
+  // invisible element, and an empty section would silently vanish.
+  return out.length > 0 ? out : [new TextRun('')]
+}
+
+/** Markdown blocks as paragraphs, with bullet lines becoming a real Word list. */
+function blocks(src: string): Paragraph[] {
+  const out: Paragraph[] = []
+
+  for (const raw of src.split('\n')) {
+    const line = raw.trimEnd()
+    if (line.trim() === '') continue
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
+    if (bullet) {
+      out.push(
+        new Paragraph({
+          children: runs(bullet[1] ?? ''),
+          bullet: { level: 0 },
+          spacing: { after: 80 },
+        }),
+      )
+    } else {
+      out.push(new Paragraph({ children: runs(line), spacing: { after: 140 } }))
+    }
+  }
+
+  return out
+}
+
+export async function buildDocx(
+  src: ExportSource,
+  opts: { includeTranscript: boolean },
+): Promise<Buffer> {
+  const { meta, notes, transcript } = src
+
+  const date = new Date(meta.startedAt)
+  const when = Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleString(undefined, {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      })
+  const minutes = Math.round(meta.durationSeconds / 60)
+
+  const children: Paragraph[] = [
+    new Paragraph({ text: meta.title, heading: HeadingLevel.TITLE }),
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: `${when} · ${minutes < 1 ? 'under a minute' : `${minutes} min`}`,
+          color: '666666',
+          size: 19,
+        }),
+      ],
+      spacing: { after: 320 },
+    }),
+  ]
+
+  const userNotes = notes.userNotes.trim()
+  if (userNotes) {
+    children.push(new Paragraph({ text: 'My notes', heading: HeadingLevel.HEADING_1 }))
+    children.push(...blocks(userNotes))
+  }
+
+  for (const section of SUMMARY_SECTIONS) {
+    const text = notes.summary[section]?.trim()
+    if (!text) continue
+    children.push(new Paragraph({ text: section, heading: HeadingLevel.HEADING_1 }))
+    children.push(...blocks(text))
+  }
+
+  if (opts.includeTranscript && transcript && transcript.segments.length > 0) {
+    children.push(
+      new Paragraph({
+        text: 'Transcript',
+        heading: HeadingLevel.HEADING_1,
+        // The transcript is a reference appendix, not part of the read — a
+        // page break keeps a two-hour meeting from burying the summary.
+        pageBreakBefore: true,
+      }),
+    )
+
+    for (const s of transcript.segments) {
+      children.push(
+        new Paragraph({
+          children: [
+            // Timestamp and speaker in one leading run, so a turn stays one
+            // paragraph and Word's own reflow keeps it together.
+            new TextRun({
+              text: `${clock(s.startMs)}  ${speakerName(s)}  `,
+              bold: true,
+              color: s.speaker === 'me' ? '2F5FD0' : '9A6512',
+              size: 18,
+            }),
+            new TextRun(s.text),
+          ],
+          spacing: { after: 100 },
+        }),
+      )
+    }
+  }
+
+  if (notes.provider) {
+    children.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text:
+              `Summary generated by ${notes.provider}` +
+              `${notes.generatedAt ? ` on ${new Date(notes.generatedAt).toLocaleString()}` : ''}. ` +
+              'Transcribed locally by Oratio.',
+            italics: true,
+            color: '666666',
+            size: 18,
+          }),
+        ],
+        alignment: AlignmentType.LEFT,
+        spacing: { before: 480 },
+      }),
+    )
+  }
+
+  const doc = new Document({
+    // Shown in Word's document properties. Worth setting: an exported file that
+    // says who made it is easier to place a year later.
+    title: meta.title,
+    description: 'Meeting notes exported from Oratio',
+    sections: [{ children }],
+  })
+
+  return Packer.toBuffer(doc)
+}

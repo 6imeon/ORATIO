@@ -13,9 +13,16 @@ cloud transcription.
 
 ## Status
 
-Early development. The architecture and interfaces are in place; capture,
-transcription, and UI are being wired up. See [docs/RESEARCH.md](docs/RESEARCH.md) for
-the design rationale and competitive analysis behind these choices.
+Feature-complete, not yet released. All ten phases of the build plan are
+done — recording, local transcription, search, the UI, the tray, summarisation,
+settings and first run — and the hardening pass has been through a 2-hour soak,
+a kill mid-recording, a real system sleep and a full disk. What is left before a
+release is packaging and code signing.
+
+Not yet done: there is no signed build, so running it means building it
+yourself. See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for what each
+phase covered and [docs/RESEARCH.md](docs/RESEARCH.md) for the design rationale
+and competitive analysis behind these choices.
 
 ## Requirements
 

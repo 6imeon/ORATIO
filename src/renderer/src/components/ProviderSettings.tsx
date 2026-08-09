@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ProviderConfig, ProviderId, Settings } from '@shared/types'
+import type { KeyedProviderId, ProviderConfig, ProviderId, Settings } from '@shared/types'
 
 interface Props {
   settings: Settings
@@ -10,6 +10,21 @@ const LABELS: Record<ProviderId, string> = {
   ollama: 'Ollama',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+}
+
+const DETAILS: Record<ProviderId, string> = {
+  ollama: 'Runs on this Mac. Nothing is sent anywhere.',
+  anthropic:
+    'Sends the meeting text to this provider over the network when you ask for a summary.',
+  openai:
+    'Sends the meeting text to this provider over the network when you ask for a summary.',
+  // Named explicitly because the routing is the point of using it — and
+  // because "one key, many vendors" also means the text can end up at a
+  // company the user did not individually choose. Better said out loud here
+  // than discovered later.
+  openrouter:
+    'One key for many vendors. Sends the meeting text to OpenRouter, which forwards it to whichever model you pick.',
 }
 
 /**
@@ -34,6 +49,24 @@ export function ProviderSettings({ settings, onChange }: Props): React.JSX.Eleme
 
   const active = settings.activeProvider
 
+  /**
+   * Selecting a provider enables it.
+   *
+   * `enabled` has no control of its own — this screen is the only place a
+   * provider is chosen, so the two flags were able to disagree: picking a
+   * provider set `activeProvider` while `enabled` stayed false, and
+   * `resolveProvider` returns null for a disabled config. The result was a
+   * Summarise button greyed out with the provider visibly selected and nothing
+   * explaining why. Choosing something IS the intent to use it, so the two are
+   * set together and cannot drift apart.
+   */
+  const selectProvider = (id: ProviderId): void => {
+    onChange({
+      activeProvider: id,
+      providers: settings.providers.map((p) => (p.id === id ? { ...p, enabled: true } : p)),
+    })
+  }
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2">
@@ -48,13 +81,9 @@ export function ProviderSettings({ settings, onChange }: Props): React.JSX.Eleme
           <Choice
             key={p.id}
             label={LABELS[p.id]}
-            detail={
-              p.id === 'ollama'
-                ? 'Runs on this Mac. Nothing is sent anywhere.'
-                : 'Sends the meeting text to this provider over the network when you ask for a summary.'
-            }
+            detail={DETAILS[p.id]}
             selected={active === p.id}
-            onSelect={() => onChange({ activeProvider: p.id })}
+            onSelect={() => selectProvider(p.id)}
           >
             <ProviderDetail
               config={p}
@@ -96,6 +125,18 @@ function ProviderDetail({
           spellCheck={false}
           className="w-full rounded-md border border-(--color-line) bg-(--color-ground) px-2 py-1 font-mono text-xs text-(--color-ink)"
         />
+        {/*
+          OpenRouter needs the vendor prefix and rejects a bare model name, so
+          the format is shown rather than left to be discovered through a 404
+          at the moment the user asks for their first summary.
+        */}
+        {config.id === 'openrouter' && (
+          <p className="mt-1 text-[11px] text-(--color-ink-faint)">
+            Use a <span className="font-mono">vendor/model</span> slug, e.g.{' '}
+            <span className="font-mono">anthropic/claude-sonnet-5</span>. The full list is on
+            openrouter.ai/models.
+          </p>
+        )}
       </Field>
 
       {config.id === 'ollama' ? (
@@ -123,7 +164,7 @@ function ApiKeyField({
   saved,
   onSaved,
 }: {
-  provider: ProviderId
+  provider: KeyedProviderId
   saved: boolean
   onSaved: () => void
 }): React.JSX.Element {
@@ -135,7 +176,7 @@ function ApiKeyField({
     setBusy(true)
     setError(null)
     try {
-      await window.oratio.ai.setKey(provider as 'anthropic' | 'openai', next)
+      await window.oratio.ai.setKey(provider, next)
       setValue('')
       onSaved()
     } catch (err) {

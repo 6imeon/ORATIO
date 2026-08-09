@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, nativeTheme } from 'electron'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
@@ -10,6 +10,7 @@ import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
 import { registerMicPort } from './audio/micPort'
 import { RecordingController } from './recording/RecordingController'
+import { recoverOrphanedSessions } from './recording/recoverOrphans'
 import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
@@ -29,6 +30,30 @@ log.transports.file.level = 'info'
 
 let mainWindow: BrowserWindow | null = null
 
+/**
+ * Last-resort handlers, so an unexpected throw is written down somewhere.
+ *
+ * Both workers have had these since they were written; main never did, which
+ * meant the one process holding a live recording was the one process that
+ * could die without explanation. Electron's default for an uncaught exception
+ * in main is a dialog and exit, and the log file is the only thing left
+ * afterwards to say what happened.
+ *
+ * Deliberately does NOT try to save the recording. Finalizing a WAV from an
+ * unknown-broken state means running the same async writer machinery that may
+ * be what just failed, and a hang here would replace a crash with an app that
+ * cannot be quit. The 30-second header patch is what makes that acceptable:
+ * the audio on disk is already playable, and `recoverOrphanedSessions` rebuilds
+ * the meta.json on next launch.
+ */
+process.on('uncaughtException', (err) => {
+  log.error('[app] uncaught exception in main', err)
+})
+
+process.on('unhandledRejection', (reason) => {
+  log.error('[app] unhandled rejection in main', reason)
+})
+
 /** Set once `before-quit` has begun finalizing, so the second pass can proceed. */
 let quitting = false
 
@@ -37,6 +62,14 @@ let quitting = false
  * `whenReady` — can shut the worker down. Null until the app is ready.
  */
 let indexClient: IndexClient | null = null
+
+/**
+ * Module-scope for the same reason as `indexClient`: `claimMic` is called from
+ * a window that may finish loading before or after any given point in startup,
+ * and it has to be able to ask whether a recording is actually in progress.
+ * Null until the app is ready.
+ */
+let recordingController: RecordingController | null = null
 
 /**
  * Push an event to every live renderer.
@@ -65,48 +98,164 @@ function broadcast(channel: string, payload: unknown): void {
 let micOwnerId: number | null = null
 
 /**
+ * A window that exists only to hold the microphone.
+ *
+ * `getUserMedia` is the only mic API Electron exposes without a second native
+ * dependency, and it lives in a renderer. So a recording started from the tray
+ * with nothing open used to capture system audio ONLY: the mic track came back
+ * empty, the meeting lost the user's own voice, and the sole evidence was a
+ * line in the log. For a menu-bar app whose entire purpose is starting a
+ * meeting from the menu bar, that is the common path, not the edge case.
+ *
+ * Never shown, so it is not the "opening a window unbidden" behaviour a
+ * recorder should not have — nothing appears on screen and nothing steals
+ * focus. It is a host for an audio context, and it is closed the moment the
+ * recording stops.
+ */
+let micHostWindow: BrowserWindow | null = null
+
+/**
+ * A window the user can actually see, if there is one.
+ *
+ * The mic host is a real `BrowserWindow` to Electron, so anything asking "is a
+ * window open?" has to exclude it explicitly or it will get the wrong answer —
+ * the Dock-click handler did exactly that and silently stopped opening the
+ * window during a tray-started recording. Defined once so that exclusion cannot
+ * be forgotten at one of the call sites.
+ */
+function firstVisibleWindow(): BrowserWindow | undefined {
+  return BrowserWindow.getAllWindows().find(
+    (w) => w !== micHostWindow && !w.isDestroyed() && !w.webContents.isDestroyed(),
+  )
+}
+
+function hasVisibleWindow(): boolean {
+  return firstVisibleWindow() !== undefined
+}
+
+function createMicHost(): BrowserWindow {
+  const win = new BrowserWindow({
+    show: false,
+    // Not just hidden: skipTaskbar and a zero-opacity offscreen frame keep it
+    // out of Mission Control and the window cycler, so ⌘` never lands on a
+    // window the user cannot see. `show: false` alone leaves it addressable.
+    skipTaskbar: true,
+    width: 1,
+    height: 1,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.cjs'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      // A hidden window is throttled by Chromium after a few seconds —
+      // timers are clamped and rAF stops entirely. AudioWorklet runs on the
+      // audio thread and survives that, but the message pump feeding chunks
+      // to the port does not, and the mic track would arrive in stutters.
+      backgroundThrottling: false,
+    },
+  })
+
+  win.on('closed', () => {
+    micHostWindow = null
+  })
+
+  // `?michost` selects the mic-only entry in main.tsx. Passed as a query rather
+  // than a hash so it survives both loadURL and loadFile — loadFile takes the
+  // query as a separate option and would silently drop it from the path string.
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  if (!app.isPackaged && devUrl) {
+    void win.loadURL(`${devUrl}?michost`)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'), { search: 'michost' })
+  }
+
+  return win
+}
+
+/**
+ * Close the mic host, if that is what was holding the mic.
+ *
+ * A real window that happened to own the mic must obviously survive; only the
+ * invisible one is disposable. Keeping it alive between recordings would leave
+ * an idle renderer — and, on some macOS routes, the orange microphone
+ * indicator — running with no meeting in progress.
+ */
+function closeMicHost(): void {
+  const win = micHostWindow
+  micHostWindow = null
+  if (win && !win.isDestroyed()) win.destroy()
+}
+
+/**
  * Ask the renderer to open or close the microphone.
  *
- * Returns false when there is no window to ask. That is a normal state for a
- * menu-bar app — the tray can start a recording with nothing open — and it is
- * reported rather than repaired: opening a window unbidden to capture audio is
- * exactly the behaviour a meeting recorder should not have. System audio still
- * records; the mic track is simply absent, and meta.json says so.
+ * Prefers a window the user actually has open and falls back to creating the
+ * hidden host above. Always returns true for a start request now: the mic is no
+ * longer contingent on the window, which is what it always should have been —
+ * main owns recording, and "did anyone happen to leave a window open" is not a
+ * property a meeting should depend on.
  */
 function requestMic(start: boolean): boolean {
   if (!start) {
     const owner = micOwnerId
     micOwnerId = null
-    if (owner === null) return false
+    if (owner === null) {
+      closeMicHost()
+      return false
+    }
     const win = BrowserWindow.getAllWindows().find((w) => w.webContents.id === owner)
     if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
       win.webContents.send(EVENTS.MIC_STOP)
     }
+    // Deferred past the drain: MIC_STOP has to reach the renderer and the
+    // worklet's tail has to flush through the port before the WebContents is
+    // torn down. Destroying it here would drop the last words of the meeting —
+    // exactly the loss RecordingController's #waitForMicDrain exists to avoid.
+    setTimeout(closeMicHost, MIC_HOST_CLOSE_DELAY_MS)
     return true
   }
 
-  const target = BrowserWindow.getAllWindows().find(
-    (w) => !w.isDestroyed() && !w.webContents.isDestroyed(),
-  )
-  if (!target) {
-    micOwnerId = null
-    return false
+  const visible = firstVisibleWindow()
+  if (visible) {
+    micOwnerId = visible.webContents.id
+    visible.webContents.send(EVENTS.MIC_START)
+    return true
   }
 
-  micOwnerId = target.webContents.id
-  target.webContents.send(EVENTS.MIC_START)
+  // Nothing open — host the mic ourselves. The renderer claims the mic when it
+  // finishes loading (`claimMic` via useMicCapture), so there is no MIC_START
+  // to send here: sending one now would race the preload bridge and be lost.
+  if (!micHostWindow || micHostWindow.isDestroyed()) {
+    log.info('[recording] no window open — starting a hidden host for the microphone')
+    micHostWindow = createMicHost()
+  }
   return true
 }
 
 /**
- * Hand the mic to a window that opened mid-recording.
+ * How long the mic host outlives the stop request.
  *
- * A meeting started from the tray with nothing open has no mic track. Opening
- * the window then is a reasonable moment to start capturing one — the mic
- * simply joins late, and `startOffsetMs` in meta.json already carries exactly
- * that kind of gap between the two tracks.
+ * Covers the MIC_STOP hop, `MicRecorder.stop()`'s 60 ms tail wait, and the
+ * final port flush. Comfortably longer than RecordingController's own 250 ms
+ * drain so the window is never the reason a track ends early.
+ */
+const MIC_HOST_CLOSE_DELAY_MS = 1_500
+
+/**
+ * Hand the mic to a window that is ready for it.
+ *
+ * This is how the hidden host acquires the mic: it loads, `useMicCapture` asks,
+ * and it gets the mic no window was holding. It is also how a real window
+ * opened mid-meeting joins in — the mic simply starts late, and `startOffsetMs`
+ * in meta.json already carries exactly that kind of gap between the tracks.
+ *
+ * Refused when nothing is recording. Otherwise every window would open its mic
+ * on load, lighting the orange macOS microphone indicator on an idle app —
+ * which, for a recorder, is precisely the accusation you never want to be open
+ * to.
  */
 function claimMic(id: number): boolean {
+  if (!recordingController?.isRecording()) return false
   if (micOwnerId !== null) return micOwnerId === id
   micOwnerId = id
   return true
@@ -200,6 +349,11 @@ void app.whenReady().then(async () => {
   const settings = await loadSettings()
   await mkdir(settings.vaultPath, { recursive: true })
 
+  // Before the first window exists. `vibrancy` is sampled when the window is
+  // created, so a saved Light theme applied after that point would leave the
+  // frame dark until something forced it to redraw.
+  nativeTheme.themeSource = settings.theme
+
   // Lives in its own process: better-sqlite3 is synchronous, and a heavy query
   // on main's thread freezes the tray — the one surface always on screen.
   const searchIndex = new IndexClient(join(app.getPath('userData'), 'index.sqlite'))
@@ -234,7 +388,7 @@ void app.whenReady().then(async () => {
     )
   })
 
-  const recording = new RecordingController({
+  const recording = (recordingController = new RecordingController({
     capture,
     onSessionComplete: (dir) => queue.enqueue(dir),
     broadcastState: (state) => broadcast(EVENTS.RECORDING_STATE, state),
@@ -246,7 +400,7 @@ void app.whenReady().then(async () => {
      * would block a perfectly working install.
      */
     hasModel: async () => (await models.list()).some((s) => s.status === 'ready'),
-  })
+  }))
 
   // Before any handler can query it. A search arriving at a worker that has not
   // opened its database would fail with a real error rather than empty results,
@@ -400,6 +554,26 @@ void app.whenReady().then(async () => {
     void recording.shutdown().finally(() => app.quit())
   })
 
+  /**
+   * Rescue recordings the app died in the middle of.
+   *
+   * Strictly before resumePending: recovery works by writing the meta.json the
+   * crashed process never got to write, which is exactly what turns a
+   * directory the queue ignores into one it transcribes. Run in the other
+   * order, the recovered sessions would sit until the next launch.
+   *
+   * Failure here is not fatal — the audio stays on disk either way, and a
+   * vault that cannot be scanned is a problem the queue will report anyway.
+   */
+  try {
+    const recovered = await recoverOrphanedSessions(settings.vaultPath)
+    if (recovered.length > 0) {
+      log.info('[app] recovered interrupted recordings', { count: recovered.length })
+    }
+  } catch (err) {
+    log.warn('[app] orphan recovery failed', err)
+  }
+
   // Anything recorded but not transcribed — because the app quit or crashed
   // mid-job — is picked up here. The filesystem is the queue, so this needs
   // no persisted state.
@@ -423,7 +597,11 @@ void app.whenReady().then(async () => {
   })().catch((err) => log.warn('[ai] provider auto-detect failed', err))
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) showMainWindow()
+    // Counts real windows only. The invisible mic host is a window as far as
+    // Electron is concerned, so a plain length check would see it, conclude a
+    // window already exists, and leave clicking the Dock icon mid-recording
+    // doing nothing at all.
+    if (!hasVisibleWindow()) showMainWindow()
   })
 
   log.info('[app] ready', { vault: settings.vaultPath, model: settings.activeModel })

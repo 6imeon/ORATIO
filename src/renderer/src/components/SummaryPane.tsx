@@ -1,5 +1,6 @@
 import { SUMMARY_SECTION_NAMES } from '@shared/ipc'
 import type { SummaryState } from '../hooks/useSummary'
+import { Markdown } from './Markdown'
 
 interface Props {
   summary: SummaryState
@@ -76,16 +77,18 @@ export function SummaryPane({ summary, cloud, providerLabel }: Props): React.JSX
             <article key={name}>
               <h3 className="mb-1 text-[12px] font-semibold text-(--color-ink-dim)">{name}</h3>
               {/*
-                whitespace-pre-wrap rather than a Markdown renderer: the model
-                emits bullets and bold, and rendering them properly is worth
-                doing — but not at the cost of pulling a parser into the
-                streaming path, where it would re-parse the whole section on
-                every token. Plain text streams smoothly and reads correctly;
-                the file on disk is real Markdown either way.
+                Rendered Markdown, memoised per section.
+
+                This used to be `whitespace-pre-wrap` plain text, on the
+                reasoning that a parser in the streaming path would re-parse
+                every section on every token. The reasoning was right; the
+                conclusion was not. `Markdown` memoises on the source string, so
+                the parse happens once per delta rather than once per render,
+                and the model's bullets and bold — which SYSTEM_PROMPT
+                explicitly asks for in three of the five sections — now render
+                as what they are instead of as literal asterisks.
               */}
-              <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-(--color-ink-dim)">
-                {text}
-              </p>
+              <Markdown>{text}</Markdown>
             </article>
           )
         })}

@@ -29,12 +29,14 @@
     "@electron-toolkit/utils": "4.0.0",
     "audiotee": "0.0.7",
     "better-sqlite3": "13.0.2",
+    "docx": "9.7.1",
     "electron-log": "5.4.4",
     "openai": "7.3.0",
     "sherpa-onnx-node": "1.13.4",
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "26.1.2",
     "@types/react": "19.2.18",
@@ -46,7 +48,6 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwindcss": "4.3.3",
-    "@tailwindcss/vite": "4.3.3",
     "typescript": "7.0.2",
     "vite": "8.2.0",
     "zustand": "5.0.14"

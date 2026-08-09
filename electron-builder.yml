@@ -4,16 +4,23 @@ copyright: MIT
 
 directories:
   buildResources: build
-  output: dist
+  output: release
 
+# An ALLOW-list, not a block-list.
+#
+# This was a list of exclusions, which fails open: anything new in the repo
+# shipped by default, and a build was found carrying the whole test harness,
+# the .tsbuildinfo caches, and CLAUDE.md — local working notes that are
+# gitignored precisely so they stay private. Naming what goes in means a new
+# directory has to be added deliberately rather than remembered about.
+#
+# node_modules is implicit; electron-builder resolves production dependencies
+# itself, which is what puts the native modules in place for asarUnpack below.
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintrc,.prettierrc,.editorconfig,.gitignore}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
-  - '!{pnpm-lock.yaml,pnpm-workspace.yaml}'
-  - '!{docs,scripts,dist}/*'
+  - 'out/**'
+  - 'resources/**'
+  - 'package.json'
+  - 'LICENSE'
   - '!**/*.map'
 
 asarUnpack:
@@ -25,6 +32,11 @@ asarUnpack:
 
 mac:
   category: public.app-category.productivity
+  # Stated explicitly rather than relying on the buildResources convention.
+  # A missing icon does not fail the build — it silently ships the default
+  # Electron logo, which is how the first DMG went out.
+  # Regenerate with: node scripts/make-app-icon.mjs
+  icon: build/icon.png
   target:
     - target: dmg
       arch: [arm64]

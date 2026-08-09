@@ -83,6 +83,16 @@ export interface SessionMeta {
    * and so click-to-play can explain itself rather than silently failing.
    */
   audioDiscardedAt?: string
+  /**
+   * This meta.json was reconstructed at startup from the audio on disk,
+   * because the app died mid-recording and never wrote one.
+   *
+   * Worth recording because such a session is measurably weaker than a normal
+   * one: it may be missing its final seconds, and its per-track offsets are
+   * assumed to be zero rather than measured. Anything that presents timings to
+   * the user should be able to say so.
+   */
+  recovered?: boolean
 }
 
 export type SessionStatus =
@@ -161,24 +171,66 @@ export interface ModelState {
 // AI providers (summaries only — transcription is always local)
 // ---------------------------------------------------------------------------
 
-export type ProviderId = 'ollama' | 'anthropic' | 'openai'
+export type ProviderId = 'ollama' | 'anthropic' | 'openai' | 'openrouter'
+
+/**
+ * Providers that authenticate with an API key held in the Keychain.
+ *
+ * Derived from `ProviderId` rather than written out again, so adding a
+ * provider cannot leave one call site accepting it and another rejecting it —
+ * which is what a hand-maintained `'anthropic' | 'openai'` union in the IPC
+ * layer and the preload bridge had already started to do.
+ */
+export type KeyedProviderId = Exclude<ProviderId, 'ollama'>
 
 export interface ProviderConfig {
   id: ProviderId
   enabled: boolean
+  /**
+   * For OpenRouter this is a fully-qualified `vendor/model` slug
+   * (`anthropic/claude-sonnet-5`), not a bare name — that is how its API
+   * addresses models, and a bare name is rejected.
+   */
   model: string
-  /** Ollama only. Cloud providers read their key from the Keychain. */
+  /**
+   * Where to reach the provider. Ollama uses it for the local daemon;
+   * OpenRouter uses it because its endpoint is OpenAI-compatible and only the
+   * host differs. Anthropic and OpenAI ignore it and use their SDK defaults.
+   */
   baseUrl?: string
   /** Never populated when sending to the renderer — presence only. */
   hasApiKey?: boolean
 }
 
+/**
+ * Appearance. Three values, not two.
+ *
+ * "system" is the default and follows macOS, which is what almost everyone
+ * wants; the two explicit values exist because following the OS is not always
+ * what someone wants — a light-mode Mac used for a meeting in a dark room being
+ * the obvious case. Stored rather than derived, so the choice survives a
+ * restart, and applied to `data-theme` on the root element, which is the hook
+ * styles.css is already written against.
+ */
+export type ThemePreference = 'system' | 'light' | 'dark'
+
 export interface Settings {
   /** Absolute path to the user's vault. All recordings live here. */
   vaultPath: string
   activeModel: ModelId
+  theme: ThemePreference
   /** Skip non-speech before ASR. Off means Whisper hallucinates on silence. */
   vadEnabled: boolean
+  /**
+   * Drop the other side's voice back out of the mic track.
+   *
+   * Only matters when recording through speakers: the mic hears the meeting
+   * audio from the room and the transcript attributes it to you. A setting
+   * rather than always-on because it is the one feature here that can remove
+   * something the user said — headphone users get no benefit and carry the
+   * (small) risk for nothing, so they can turn it off.
+   */
+  removeSpeakerBleed: boolean
   /**
    * Default for a new session's `discardAudio`. Off — audio is kept, which is
    * what makes click-a-line-to-hear-it possible and what lets a garbled name

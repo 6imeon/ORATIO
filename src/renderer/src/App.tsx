@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { Session } from '@shared/types'
+import type { Session, ThemePreference } from '@shared/types'
 import { SessionList } from './components/SessionList'
 import { RecordButton } from './components/RecordButton'
 import { MeetingView } from './pages/MeetingView'
@@ -8,6 +8,7 @@ import { FirstRunView } from './pages/FirstRunView'
 import { useMicCapture } from './hooks/useMicCapture'
 import { useNavigation } from './hooks/useNavigation'
 import { useFirstRun } from './hooks/useFirstRun'
+import { useTheme } from './hooks/useTheme'
 
 export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -19,6 +20,19 @@ export function App(): React.JSX.Element {
   const selected = nav.sessionId
 
   const firstRun = useFirstRun()
+
+  /**
+   * Appearance lives here rather than in SettingsView because it styles the
+   * whole window, and SettingsView is unmounted the moment it is closed — a
+   * theme owned there would revert on Done. SettingsView reports changes back
+   * up through `onThemeChange`.
+   */
+  const [theme, setTheme] = useState<ThemePreference>('system')
+  useTheme(theme)
+
+  useEffect(() => {
+    void window.oratio.settings.get().then((s) => setTheme(s.theme))
+  }, [])
 
   // Mounted at the root, not inside the record button: main decides when to
   // record, and this window's mic must keep running whatever the UI is showing.
@@ -103,7 +117,7 @@ export function App(): React.JSX.Element {
 
       <main className="min-w-0 flex-1 overflow-hidden">
         {nav.settingsOpen ? (
-          <SettingsView onClose={nav.closeSettings} />
+          <SettingsView onClose={nav.closeSettings} onThemeChange={setTheme} />
         ) : current ? (
           // Keyed so switching sessions remounts: the drawer, the notes buffer
           // and the <audio> elements are all per-session state, and carrying

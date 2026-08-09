@@ -42,10 +42,22 @@ export function writeWavHeader(stream: Writable, fmt: WavFormat): void {
   stream.write(h)
 }
 
-/** Patch the RIFF and data sizes now that the payload length is known. */
+/**
+ * Patch the RIFF and data sizes now that the payload length is known.
+ *
+ * `dataBytes` is clamped to what is actually in the file. The writer counts
+ * bytes it handed to the stream, which is not the same as bytes that reached
+ * the disk: when a write fails part-way — a full volume is the case that
+ * matters — the count runs ahead of reality. A header claiming more data than
+ * the file holds makes players read past EOF right at the end of the recording,
+ * which is the part someone recovering a crashed meeting most wants.
+ */
 export async function finalizeWavHeader(path: string, dataBytes: number): Promise<void> {
   const fh = await open(path, 'r+')
   try {
+    const actual = (await fh.stat()).size
+    dataBytes = Math.max(0, Math.min(dataBytes, actual - HEADER_BYTES))
+
     const riff = Buffer.alloc(4)
     riff.writeUInt32LE(HEADER_BYTES - 8 + dataBytes, 0)
     await fh.write(riff, 0, 4, 4)

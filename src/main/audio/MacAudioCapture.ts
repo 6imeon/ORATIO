@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events'
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream, existsSync, statSync, type WriteStream } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { AudioTee } from 'audiotee'
+import { app } from 'electron'
 import log from 'electron-log/main'
 import {
   TARGET_SAMPLE_RATE,
@@ -11,6 +14,77 @@ import {
   type TrackResult,
 } from './AudioCapture'
 import { writeWavHeader, finalizeWavHeader } from './wav'
+
+/**
+ * Locate the AudioTee Swift binary ourselves instead of letting the package
+ * find it.
+ *
+ * audiotee computes its binary as `join(__dirname, '..', 'bin', 'audiotee')`,
+ * where `__dirname` comes from `import.meta.url` — the package is
+ * `"type": "module"`. Electron's asar integration patches `fs` and the CJS
+ * `require`, but the **ESM loader bypasses it entirely**, so in a packaged app
+ * `import.meta.url` reports a path *inside* the archive
+ * (`.../app.asar/node_modules/audiotee/dist/index.js`) even though the file was
+ * unpacked. The spawn path then traverses `app.asar` — a regular file — as if
+ * it were a directory, and the failure is `spawn ENOTDIR`, which names neither
+ * the file nor the archive.
+ *
+ * This is CLAUDE.md rule 5 wearing a different hat: never resolve a bundled
+ * path from `__dirname`. `app.getAppPath()` is authoritative, and appending
+ * `.unpacked` to it is how you address something asarUnpack pulled out.
+ *
+ * Verified rather than assumed — a missing binary here is another silent
+ * macOS failure, so an absent file is reported now, with a path in the message,
+ * instead of surfacing later as a bare errno.
+ */
+function resolveAudioTeeBinary(): string {
+  const appPath = app.getAppPath()
+
+  if (appPath.endsWith('.asar')) {
+    // Packaged: asarUnpack put the real file beside the archive.
+    const unpacked = `${appPath}.unpacked`
+    const binary = join(unpacked, 'node_modules', 'audiotee', 'bin', 'audiotee')
+
+    /**
+     * Check the containing DIRECTORY, not the file.
+     *
+     * Electron's asar shim makes `existsSync` return true for paths inside the
+     * archive, so an existence check on the binary passes even when asarUnpack
+     * did not run — the very case this guard is for. `statSync().isDirectory()`
+     * on the unpacked tree is not faked: if unpacking did not happen, the
+     * `.unpacked` directory is simply absent.
+     */
+    const binDir = dirname(binary)
+    const unpackedProperly = existsSync(binDir) && statSync(binDir).isDirectory()
+    if (!unpackedProperly) {
+      throw new Error(
+        `AudioTee was not unpacked from the asar (expected ${binary}). ` +
+          "It must be listed in electron-builder.yml's asarUnpack — a native " +
+          'binary cannot be executed from inside an asar archive.',
+      )
+    }
+    return binary
+  }
+
+  /*
+   * Dev: resolve through the package itself, which handles pnpm's store layout
+   * (node_modules/audiotee is a symlink into .pnpm) without hardcoding it.
+   *
+   * Deliberately NOT named `require`. Main is bundled to CommonJS, so a local
+   * `const require = ...` compiles to a binding that shadows the module's own
+   * `require` for the whole function body — and rollup hoists the helper this
+   * file uses above it, so calling it hits the temporal dead zone:
+   * "Cannot access 'require' before initialization". Every recording in dev
+   * failed with that until the name was changed; the packaged build took the
+   * branch above and never reached it, which is what made it survive testing.
+   */
+  const resolveFrom = createRequire(import.meta.url)
+  const binary = join(dirname(resolveFrom.resolve('audiotee')), '..', 'bin', 'audiotee')
+  if (!existsSync(binary)) {
+    throw new Error(`AudioTee binary is missing at ${binary}. Try reinstalling with pnpm install.`)
+  }
+  return binary
+}
 
 /**
  * macOS capture: AudioTee for system audio, getUserMedia (renderer) for mic.
@@ -34,6 +108,7 @@ import { writeWavHeader, finalizeWavHeader } from './wav'
  * The two tracks are written to SEPARATE files and never mixed. That split
  * is what gives speaker attribution for free.
  */
+
 export class MacAudioCapture extends EventEmitter implements AudioCapture {
   readonly platform = 'darwin' as const
 
@@ -56,12 +131,21 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
   async start(opts: CaptureOptions): Promise<void> {
     if (this.#recording) return
 
-    this.#mic = new TrackWriter(opts.micPath)
-    this.#system = new TrackWriter(opts.systemPath)
+    const onWriteError = (err: Error): void => {
+      log.error('[audio] track write error', err)
+      this.emit('error', err)
+    }
+    this.#mic = new TrackWriter(opts.micPath, onWriteError)
+    this.#system = new TrackWriter(opts.systemPath, onWriteError)
 
     // Ask AudioTee for exactly the format sherpa-onnx wants, so no
-    // resampling is needed anywhere downstream.
-    this.#tee = new AudioTee({ sampleRate: TARGET_SAMPLE_RATE })
+    // resampling is needed anywhere downstream. binaryPath is passed
+    // explicitly because the package cannot locate itself inside an asar —
+    // see resolveAudioTeeBinary.
+    this.#tee = new AudioTee({
+      sampleRate: TARGET_SAMPLE_RATE,
+      binaryPath: resolveAudioTeeBinary(),
+    })
 
     let formatChecked = false
 
@@ -235,10 +319,38 @@ class TrackWriter {
   #lastPatchAt = 0
   #patching = false
 
-  constructor(path: string) {
+  /**
+   * First write error, kept rather than thrown.
+   *
+   * A full disk is the case this exists for. `write()` is called from an
+   * AudioTee data callback and from the mic IPC handler — neither has anywhere
+   * to put a rejection, so throwing would surface as an unhandled error at a
+   * random point in the audio path. Instead the failure is recorded and
+   * reported once through the capture `error` event.
+   *
+   * `close()` deliberately does NOT re-throw it. The recording is still saved:
+   * the samples written before the failure are real audio, and a meeting that
+   * lost its last minutes to a full disk is worth far more than no meeting at
+   * all. The user has already been told what happened.
+   */
+  #writeError: Error | null = null
+
+  /** Reports a fatal write failure to the owning capture, once. */
+  readonly #onError: (err: Error) => void
+
+  constructor(path: string, onError: (err: Error) => void) {
     this.#path = path
+    this.#onError = onError
     this.#stream = createWriteStream(path)
     writeWavHeader(this.#stream, { sampleRate: TARGET_SAMPLE_RATE, channels: 1 })
+
+    /**
+     * Without this handler a stream error is an unhandled 'error' event, which
+     * Node throws — taking down the main process and the meeting with it. The
+     * disk filling up mid-recording is a normal thing that happens to real
+     * users, and it has to end in a message rather than a crash.
+     */
+    this.#stream.on('error', (err) => this.#fail(err))
 
     this.#stream.on('drain', () => {
       if (this.#droppedWhileBackpressured > 0) {
@@ -252,6 +364,24 @@ class TrackWriter {
     })
   }
 
+  /**
+   * Record a fatal write failure and report it upward exactly once.
+   *
+   * Only the first is kept: a full disk produces one error per buffer, and
+   * thirty a second of identical ENOSPC would bury the one that explains it.
+   */
+  #fail(err: Error): void {
+    if (this.#writeError) return
+    this.#writeError = err
+    log.error('[audio] write failed', { path: this.#path, err })
+    this.#onError(
+      new Error(
+        `Recording to ${this.#path} failed: ${err.message}. ` +
+          'Audio already written is still on disk.',
+      ),
+    )
+  }
+
   get peak(): number {
     return this.#peak
   }
@@ -263,6 +393,19 @@ class TrackWriter {
 
   /** Returns the peak of this buffer, 0..1. */
   write(samples: Float32Array): number {
+    // Once the stream has failed there is nothing useful to do with further
+    // buffers: the fd is gone, and every subsequent write would raise the
+    // same error again. Levels keep being reported so the meters stay live
+    // and the user can see the meeting is still in progress.
+    if (this.#writeError) {
+      let bufPeak = 0
+      for (let i = 0; i < samples.length; i++) {
+        const a = Math.abs(samples[i]!)
+        if (a > bufPeak) bufPeak = a
+      }
+      return bufPeak
+    }
+
     if (this.#firstBufferAt === null) {
       this.#firstBufferAt = Date.now()
       this.#lastPatchAt = this.#firstBufferAt
@@ -333,8 +476,28 @@ class TrackWriter {
   }
 
   async close(): Promise<TrackResult> {
-    await new Promise<void>((resolve) => this.#stream.end(resolve))
-    await finalizeWavHeader(this.#path, this.#bytes)
+    // `end()` on a stream that already errored never fires its callback, so
+    // this would hang forever waiting for a flush that cannot happen.
+    if (this.#writeError) {
+      this.#stream.destroy()
+    } else {
+      await new Promise<void>((resolve) => this.#stream.end(resolve))
+    }
+
+    /**
+     * Patch the header even on failure, so the bytes that DID land are a
+     * playable file rather than a WAV claiming zero length. This is the same
+     * reason the header is patched periodically while recording: partial audio
+     * is worth keeping, and it is only worth keeping if something can open it.
+     */
+    try {
+      await finalizeWavHeader(this.#path, this.#bytes)
+    } catch (err) {
+      // A disk with no room for 8 bytes of header is possible. The samples are
+      // still there, and repairWavHeader can reconstruct the sizes later.
+      log.warn('[audio] could not finalize header', { path: this.#path, err })
+    }
+
     return {
       path: this.#path,
       firstBufferAt: this.#firstBufferAt,

@@ -1,4 +1,12 @@
-import { app, ipcMain, dialog, shell, systemPreferences, BrowserWindow } from 'electron'
+import {
+  app,
+  ipcMain,
+  dialog,
+  shell,
+  systemPreferences,
+  nativeTheme,
+  BrowserWindow,
+} from 'electron'
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -8,13 +16,14 @@ import {
   EVENTS,
   type AIDoneEvent,
   type AITokenEvent,
+  type ExportRequest,
   type PermissionState,
   type StartRecordingOptions,
   type StoredSummary,
   type SummarySection,
 } from '@shared/ipc'
 import { MODELS } from '@shared/models'
-import type { ModelId, Settings } from '@shared/types'
+import type { KeyedProviderId, ModelId, Settings } from '@shared/types'
 import type { MacAudioCapture } from '../audio/MacAudioCapture'
 import type { RecordingController } from '../recording/RecordingController'
 import type { TranscriptionQueue } from '../transcription/TranscriptionQueue'
@@ -31,6 +40,8 @@ import {
   sessionDir,
 } from '../storage/vault'
 import { parseNotes, renderNotesDoc } from '../storage/notesDoc'
+import { FORMATS, suggestedFilename } from '../export/formats'
+import { writeExport } from '../export/exporter'
 import { readCaptureHealth, inferTrackAccess } from '../storage/captureHealth'
 import { resolveProvider, runSummarize } from '../ai/Summarizer'
 import { loadSettings, saveSettings, setApiKey, hasApiKey } from '../storage/settings'
@@ -159,6 +170,52 @@ export function registerIpc(deps: Deps): void {
   })
 
   /**
+   * Export one meeting to a file the user chooses.
+   *
+   * The whole operation lives in main because the renderer has no filesystem
+   * access — it names a session and a format, and gets back the path that was
+   * written. A cancelled dialog resolves null rather than rejecting: closing a
+   * save sheet is not an error, and treating it as one would put an error
+   * message on screen every time someone changed their mind.
+   */
+  ipcMain.handle(IPC.SESSION_EXPORT, async (event, req: ExportRequest) => {
+    const settings = await loadSettings()
+    const dir = sessionDir(settings.vaultPath, req.sessionId)
+
+    const meta = await readMeta(dir)
+    if (!meta) throw new Error('That meeting could not be found.')
+
+    const notes = parseNotes(await readNotes(dir))
+    const transcript = await readTranscript(dir)
+    const source = { meta, notes, transcript }
+    const spec = FORMATS[req.format]
+
+    // Parented to the requesting window so the save sheet slides out of it
+    // rather than appearing as a detached dialog — and so it is modal to that
+    // window only, leaving a recording in another one usable.
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showSaveDialog(parent ?? undefined!, {
+      title: `Export as ${spec.label}`,
+      defaultPath: suggestedFilename(meta, req.format),
+      filters: [{ name: spec.label, extensions: [spec.extension] }],
+    })
+
+    if (result.canceled || !result.filePath) return null
+
+    await writeExport(source, req.format, result.filePath, {
+      includeTranscript: req.includeTranscript,
+    })
+
+    log.info('[export] wrote meeting', {
+      sessionId: req.sessionId,
+      format: req.format,
+      path: result.filePath,
+    })
+
+    return result.filePath
+  })
+
+  /**
    * Returns ids and snippets only — never whole transcripts (UI.md §0).
    *
    * `SearchHit` carries a bounded snippet built by FTS5 around the match, so a
@@ -256,6 +313,18 @@ export function registerIpc(deps: Deps): void {
       app.setLoginItemSettings({ openAtLogin: next.launchAtLogin })
     }
 
+    /**
+     * The window's vibrancy is drawn by AppKit, not by our CSS.
+     *
+     * `body` is transparent so the `vibrancy: 'sidebar'` layer shows through,
+     * and that layer follows the *system* appearance — so setting `data-theme`
+     * in the renderer alone gives a light UI sitting on a dark blurred
+     * backdrop, or the reverse. `themeSource` is what actually moves it, and
+     * it also fixes the native scrollbars, the traffic lights and any system
+     * dialog. Set here so the renderer and the frame can never disagree.
+     */
+    nativeTheme.themeSource = next.theme
+
     return next
   })
 
@@ -339,7 +408,7 @@ export function registerIpc(deps: Deps): void {
 
   // -- AI providers --------------------------------------------------------
 
-  ipcMain.handle(IPC.AI_SET_KEY, async (_e, provider: 'anthropic' | 'openai', key: string) => {
+  ipcMain.handle(IPC.AI_SET_KEY, async (_e, provider: KeyedProviderId, key: string) => {
     await setApiKey(provider, key)
   })
 

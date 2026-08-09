@@ -616,8 +616,17 @@ transcript is untrusted input. Meetily's prompt carries the same defence
 
 ### Inference parameters — one real bug fixed
 
-`temperature: 0.2` on all three providers (extraction, not composition), and
+`temperature: 0.2` on every provider (extraction, not composition), and
 `max_tokens: 8192` so a thorough Discussion section isn't truncated.
+
+**OpenRouter shares the OpenAI code path.** Its API is OpenAI-compatible, so it
+differs only in base URL, two attribution headers, and the fact that models are
+addressed as `vendor/model` slugs — a bare `gpt-5-mini` is a 404 there. The
+streaming loop is shared verbatim rather than copied, so the abort handling
+cannot drift between the two. It exists as its own entry rather than as "point
+OpenAI at another URL" because that is the option that lets someone use Gemini,
+Llama or DeepSeek without this project shipping an SDK for each, and an option
+hidden behind a URL field nobody finds is the same as no option.
 
 **The Ollama default was silently wrong.** Ollama defaults `num_ctx` to 2048
 and truncates longer input **from the front**, with no error anywhere. A

@@ -7,7 +7,10 @@ import type { SessionMeta, Transcript, TranscriptSegment } from '@shared/types'
 import type { TranscriptionProgress } from '@shared/ipc'
 import type { TranscriptionEngine } from './TranscriptionEngine'
 import { isLikelyHallucination } from './vad'
+import { removeSpeakerBleed } from './bleed'
+import { readWav, rmsDb } from '../audio/readWav'
 import { discardSessionAudio, hasAudio, readMeta } from '../storage/vault'
+import { loadSettings } from '../storage/settings'
 
 /**
  * Serial queue of sessions awaiting transcription.
@@ -139,6 +142,74 @@ export class TranscriptionQueue extends EventEmitter {
     if (this.#queue.length > 0) void this.#drain()
   }
 
+  /**
+   * Strip the other side's voice back out of the mic track.
+   *
+   * With speakers rather than headphones the mic hears the meeting audio from
+   * the room, ASR transcribes it, and the user is recorded saying what the
+   * other person said. See `bleed.ts` for why this is detection rather than
+   * echo cancellation — briefly: our two capture paths have independent
+   * clocks, which makes an adaptive filter unable to converge, and a
+   * mis-converged AEC would eat the user's real speech.
+   *
+   * Failure here degrades to the unfiltered transcript rather than losing it.
+   * A missing or unreadable WAV is completely normal — `discardAudio` deletes
+   * both tracks as soon as the transcript exists — and a session recorded with
+   * no mic has nothing to filter in the first place.
+   */
+  async #removeBleed(
+    dir: string,
+    meta: SessionMeta,
+    segments: TranscriptSegment[],
+  ): Promise<TranscriptSegment[]> {
+    if (!(await loadSettings()).removeSpeakerBleed) return segments
+
+    const micTrack = meta.tracks.find((t) => t.speaker === 'me')
+    const systemTrack = meta.tracks.find((t) => t.speaker === 'them')
+    if (!micTrack || !systemTrack) return segments
+
+    const micPath = join(dir, micTrack.file)
+    const systemPath = join(dir, systemTrack.file)
+    if (!existsSync(micPath) || !existsSync(systemPath)) return segments
+
+    try {
+      const [mic, system] = await Promise.all([readWav(micPath), readWav(systemPath)])
+
+      /**
+       * Levels are read at the segment's own offsets on both tracks.
+       *
+       * `startMs` is already on the shared session clock — the track offsets
+       * were applied during the merge above — and both WAVs start at the
+       * session anchor, so the same window addresses the same instant in each.
+       */
+      const result = removeSpeakerBleed(segments, (seg) => {
+        const m = rmsDb(mic.samples, mic.sampleRate, seg.startMs, seg.endMs)
+        const s = rmsDb(system.samples, system.sampleRate, seg.startMs, seg.endMs)
+        return m - s
+      })
+
+      if (result.removed > 0) {
+        await this.#log(
+          dir,
+          `removed ${result.removed} speaker-bleed segments from the mic track ` +
+            `(median ${result.medianLevelDb.toFixed(1)} dB below system audio)`,
+        )
+        log.info('[transcribe] removed speaker bleed', {
+          sessionId: meta.id,
+          removed: result.removed,
+          medianLevelDb: Number(result.medianLevelDb.toFixed(1)),
+        })
+      }
+
+      return result.segments
+    } catch (err) {
+      // Never fatal: a transcript with some misattributed lines is far better
+      // than no transcript at all.
+      await this.#log(dir, `bleed detection skipped: ${err}`)
+      return segments
+    }
+  }
+
   async #transcribe(dir: string, sessionId: string): Promise<void> {
     const meta = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8')) as SessionMeta
 
@@ -193,10 +264,12 @@ export class TranscriptionQueue extends EventEmitter {
     // Shift onto one shared clock, then interleave the two speakers.
     merged.sort((a, b) => a.startMs - b.startMs)
 
+    const segments = await this.#removeBleed(dir, meta, merged)
+
     const transcript: Transcript = {
       model: engine.modelId,
       createdAt: new Date().toISOString(),
-      segments: merged,
+      segments,
     }
 
     // Write atomically: resumePending treats the presence of transcript.json

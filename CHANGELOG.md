@@ -13,6 +13,49 @@ for what has to land first.
 
 ### Added
 
+- **Your microphone no longer puts the other person's words in your mouth.**
+  Recording through speakers instead of headphones means the mic also hears the
+  meeting audio from the room, so the transcript recorded you saying whatever
+  they said — badly, since it is a second-hand copy. Oratio now compares the two
+  tracks and drops those segments. It is a detection, not an echo canceller:
+  the audio is never modified, so this cannot produce a silent recording. Off
+  in Settings for anyone on headphones, who gains nothing from it.
+
+- **Meetings can be exported.** Markdown, PDF, Word, plain text, and — for the
+  transcript itself — SRT, WebVTT and JSON, with an option to append the full
+  transcript to the document formats. The vault was always plain files, so this
+  is not an escape hatch; it is for handing one meeting to someone who does not
+  use Oratio.
+
+- **Light and dark themes can be chosen**, not just inherited. Settings has
+  System, Light and Dark; System follows macOS as before.
+
+- **Summaries render as formatted text.** Bold, italics, code and bullet lists
+  now display as themselves rather than as literal asterisks — the summary
+  prompt asks the model for bullets in three of its five sections, so this had
+  been visible in every summary with an action-item list.
+
+- **OpenRouter is available as a summariser.** One key reaches most models —
+  Claude, GPT, Gemini, Llama, DeepSeek — so using a model Oratio has never
+  heard of does not require Oratio to ship an SDK for it. Models are named the
+  way OpenRouter names them (`anthropic/claude-sonnet-5`), and the settings
+  pane says so rather than leaving it to be discovered through a failed
+  summary. Like every cloud provider it is opt-in, off by default, never
+  auto-selected, and used only for summaries: **audio and transcription stay on
+  your machine regardless of which provider is chosen.**
+
+- **The app has an icon**, and the menu-bar item has its own: a speech bubble
+  with two offset lines, one for each side of the conversation — the two tracks
+  Oratio records separately and never mixes.
+
+- **A recording interrupted by a crash is no longer lost.** If the app dies
+  mid-meeting — a crash, a force quit, the battery going — the next launch
+  finds the audio, repairs the WAV headers from what is on disk, writes the
+  `meta.json` the crashed process never got to write, and hands the session to
+  transcription like any other. The recovered meeting is labelled as such,
+  because it may be missing its last few seconds. Previously the audio stayed
+  on disk and nothing ever looked at it again.
+
 - **Settings is real, and first run does one thing.** Five groups on one
   screen — Vault, Model, Recording, Summaries, Permissions — with no tabs, no
   sub-pages and no Save button: every control writes as you change it.
@@ -143,6 +186,48 @@ for what has to land first.
 
 ### Fixed
 
+- **Starting a recording from the menu bar captured only the other side.** The
+  microphone lives in a window — `getUserMedia` is the only mic API Electron
+  offers — so a meeting started from the tray with nothing open recorded system
+  audio and a 44-byte mic track, saying so only in the log. For a menu-bar app
+  that is the normal way to start a meeting, not an edge case. Main now creates
+  an invisible window to hold the mic and closes it when the recording stops.
+- **No recording could start in development.** The fix for the packaged-app
+  `spawn ENOTDIR` introduced `const require = createRequire(...)`, which in a
+  CommonJS bundle shadows the module's own `require` for the entire function —
+  so the call hit the temporal dead zone and threw *"Cannot access 'require'
+  before initialization"*. The packaged build takes the other branch and never
+  reached it, which is exactly why it survived testing.
+- **Summaries all rendered as one undifferentiated block.** The section parser
+  required the two section signs the prompt asks for, and models emit one — a
+  real run produced `§` on all five headers, so nothing was classified and every
+  section fell through as body text. It now accepts one or more and anchors on
+  the section name.
+- **Choosing a summariser did not enable it.** Picking a provider set the active
+  provider but left its `enabled` flag false, and nothing in the UI could set
+  that flag — so Summarise stayed permanently greyed out with the provider
+  visibly selected and no explanation. Choosing a provider now enables it, and
+  the reason a summariser is unavailable is written to the log.
+- **The "this leaves your Mac" warning could have gone missing on a new
+  provider.** The check listed the cloud providers by name, so anything added
+  later was treated as local until someone remembered to update that line — a
+  privacy disclosure that fails open. It now lists the providers that stay
+  local instead, so the default for anything new is to warn.
+- **The packaged app carried files it should not have.** The build's file list
+  was a set of exclusions, which ships anything new by default; a build was
+  found containing the test harness and local working notes. It is now an
+  allow-list naming only what the app needs.
+- **A full disk crashed the app instead of telling you.** The WAV writer had no
+  error handler, so a disk filling up mid-meeting raised an unhandled stream
+  error and took the whole process down — losing the recording it was in the
+  middle of. It now stops writing, reports which file failed and why, keeps
+  every second captured before the failure, and still saves the meeting.
+- **A WAV could claim more audio than it contained.** The header was written
+  from the byte count handed to the stream, which runs ahead of what reached
+  the disk when a write fails part-way. Players would read past the end of the
+  file — right at the end of the recording, which is the part someone
+  recovering a crashed meeting most wants back. The size is now taken from the
+  file itself.
 - **System-audio status was hardcoded, not detected.** The permissions check
   returned "unknown" unconditionally, so it could never have told you your
   system audio was blocked. It now reports what the last completed recording

@@ -229,8 +229,19 @@ even after the memory is no longer required)"*.
 unknown until stop. We write a placeholder header, stream PCM, then patch the
 two size fields on finalize. Patch the header **periodically** (~every 30 s),
 not only at the end: a crashed recording then leaves a *playable* truncated
-file instead of a corrupt one. This dovetails with filesystem-as-queue —
-crash recovery costs nothing.
+file instead of a corrupt one.
+
+Two corrections from phase 10, both found by testing rather than reading:
+
+- **Clamp the finalized size to the file's real size.** The writer counts bytes
+  handed to the stream, which is not the same as bytes that reached the disk —
+  on a failed write (a full volume) the count runs ahead, and a header claiming
+  more data than the file holds makes players read past EOF at the end of the
+  recording. `finalizeWavHeader` stats the file and takes the smaller number.
+- **The periodic patch is not enough on its own.** It bounds the loss to 30 s,
+  but a file whose header was never patched at all — a crash in the first half
+  minute — is one `afinfo` refuses to open (`AudioFileOpenURL failed`). See
+  §4.1: the recovery pass repairs these at startup.
 
 Store 16-bit PCM, not Float32. Half the bytes, no meaningful loss at 16 kHz,
 and it is what every downstream tool expects.
@@ -253,6 +264,13 @@ which cannot transfer.
   freezes and `setInterval` does not retroactively fire missed ticks. Derive
   elapsed time from **bytes written / sample count**, which is ground truth.
   Listen to `powerMonitor` `suspend`/`resume` to mark discontinuities.
+- **The suspend/resume gap is not the amount of audio lost** — verified against
+  a real `pmset sleepnow` in phase 10. The Mac was away 16.0 s by those two
+  events and only 2.1 s of audio went missing, because macOS enters true `Sleep`
+  for a few seconds and then `DarkWake`, a low-power state where the CPU keeps
+  running (`pmset -g log` shows both). So the gap bounds the loss but does not
+  predict it, and nothing should be derived from the wall clock between the two
+  events — which is the same reason duration comes from the sample count.
 
 ---
 
@@ -263,6 +281,27 @@ which cannot transfer.
 Unchanged and load-bearing: `meta.json` present + `transcript.json` absent =
 pending. No queue database, nothing to corrupt, crash recovery for free.
 `TranscriptionQueue.resumePending()` rescans on launch.
+
+**The rule has one blind spot, and it needs a second pass to cover.** "Complete
+means `meta.json` exists" gives free recovery for every crash *after* recording.
+It gives none for a crash *during* recording: that directory has two WAVs and no
+`meta.json`, so `listSessions` skips it and `resumePending` skips it, and the
+meeting is invisible forever. The audio is on disk and nothing looks at it
+again — the worst outcome available, because it is silent.
+
+`recoverOrphanedSessions()` runs at startup, strictly **before**
+`resumePending()`, and closes it without adding any state. It finishes the job
+the crashed process did not: repair each WAV header from the byte count on disk,
+write the `meta.json` that was never written, and stop. The session then *is*
+pending by the ordinary rule, and the ordinary path transcribes it in the same
+launch. Ordering matters — reversed, a recovered session would wait for the next
+launch.
+
+Recovery reconstructs only what the audio can support. `startOffsetMs` is 0 for
+both tracks (the real value came from two in-memory timestamps that died with
+the process), `startedAt` comes from the directory name rather than mtime, and
+the session carries `recovered: true` so anything presenting timings can say the
+last seconds may be missing.
 
 ### 4.2 One wrapper around sherpa
 

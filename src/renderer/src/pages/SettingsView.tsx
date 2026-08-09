@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Settings } from '@shared/types'
+import type { Settings, ThemePreference } from '@shared/types'
 import { ModelPicker } from '../components/ModelPicker'
 import { PermissionsPanel } from '../components/PermissionsPanel'
 import { ProviderSettings } from '../components/ProviderSettings'
@@ -17,7 +17,18 @@ import { ProviderSettings } from '../components/ProviderSettings'
  * path, and the failure mode of forgetting to press Save is worse than the
  * cost of a write per toggle.
  */
-export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.Element {
+export function SettingsView({
+  onClose,
+  onThemeChange,
+}: {
+  onClose: () => void
+  /**
+   * Reported upward as well as saved, because the theme styles the whole
+   * window and this view is unmounted on Done — state kept only here would
+   * revert the moment the user closed the screen they set it on.
+   */
+  onThemeChange?: (theme: ThemePreference) => void
+}): React.JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -79,12 +90,39 @@ export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.El
                 />
               </Group>
 
+              <Group title="Appearance">
+                <SegmentedControl
+                  label="Theme"
+                  value={settings.theme}
+                  options={[
+                    { value: 'system', label: 'System' },
+                    { value: 'light', label: 'Light' },
+                    { value: 'dark', label: 'Dark' },
+                  ]}
+                  onChange={(v) => {
+                    // Applied immediately, before the write resolves. The whole
+                    // point of a theme control is that you can see the result;
+                    // waiting on a disk round-trip to repaint would make the
+                    // control feel broken on a slow write.
+                    onThemeChange?.(v)
+                    void update({ theme: v })
+                  }}
+                  hint="System follows your macOS appearance setting."
+                />
+              </Group>
+
               <Group title="Recording">
                 <Toggle
                   label="Voice detection"
                   checked={settings.vadEnabled}
                   onChange={(v) => void update({ vadEnabled: v })}
                   hint="Skips silence before transcribing. Leaving it off makes the model invent speech during quiet stretches, and a system audio tap captures a lot of them."
+                />
+                <Toggle
+                  label="Ignore my speakers in the microphone"
+                  checked={settings.removeSpeakerBleed}
+                  onChange={(v) => void update({ removeSpeakerBleed: v })}
+                  hint="Without headphones your microphone also hears the other side, and those words get transcribed as yours. This drops them by comparing the two tracks — it only removes mic audio that is far quieter than the meeting audio at the same moment."
                 />
                 <Toggle
                   label="Delete audio after transcribing"
@@ -207,6 +245,70 @@ function Group({
       </div>
       {children}
     </section>
+  )
+}
+
+/**
+ * A small set of mutually exclusive choices, shown all at once.
+ *
+ * Radio inputs under the hood rather than buttons, so arrow keys move between
+ * options and VoiceOver announces the group and the position within it — both
+ * of which a row of `<button>`s silently loses. The segmented look is styling
+ * over a real radiogroup, not a reimplementation of one.
+ */
+function SegmentedControl<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  hint,
+}: {
+  label: string
+  value: T
+  options: readonly { value: T; label: string }[]
+  onChange: (v: T) => void
+  hint?: string
+}): React.JSX.Element {
+  return (
+    <div className="rounded-lg border border-(--color-line) bg-(--color-surface) px-3 py-2.5">
+      <div className="flex items-center gap-3">
+        <span className="text-[13px] text-(--color-ink)">{label}</span>
+        <div
+          role="radiogroup"
+          aria-label={label}
+          className="ml-auto flex gap-0.5 rounded-md bg-(--color-raised) p-0.5"
+        >
+          {options.map((opt) => {
+            const selected = opt.value === value
+            return (
+              <label
+                key={opt.value}
+                className={`cursor-pointer rounded px-2.5 py-1 text-xs ${
+                  selected
+                    ? 'bg-(--color-surface) font-medium text-(--color-ink) shadow-sm'
+                    : 'text-(--color-ink-dim) hover:text-(--color-ink)'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={label}
+                  checked={selected}
+                  onChange={() => onChange(opt.value)}
+                  // Visually hidden, not `display: none` — a hidden input is
+                  // removed from the tab order entirely, which would make the
+                  // control unreachable by keyboard.
+                  className="sr-only"
+                />
+                {opt.label}
+              </label>
+            )
+          })}
+        </div>
+      </div>
+      {hint && (
+        <p className="mt-1.5 text-xs leading-relaxed text-(--color-ink-faint)">{hint}</p>
+      )}
+    </div>
   )
 }
 

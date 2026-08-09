@@ -820,16 +820,139 @@ after it describes the wrong directory.
 
 ---
 
-## Phase 10 — Hardening
+## Phase 10 — Hardening ✅
 
-- [ ] **2-hour soak.** Watch `external` and `arrayBuffers` in `process.memoryUsage()`, not `heapUsed` — buffer memory is invisible to `heapUsed`, which is exactly our risk profile
-- [ ] Kill the app mid-recording; confirm a playable WAV and correct queue recovery
-- [ ] Sleep the Mac mid-recording; confirm duration is still right
-- [ ] Fill the disk mid-recording; confirm the failure is *reported*
-- [ ] Measure first window open; pre-warm **only if** above 1 s (~50 MB permanent cost)
-- [ ] Verify `enableExternalBuffer` and the `@rpath` finding still hold after any sherpa upgrade
+- [x] **2-hour soak.** Watch `external` and `arrayBuffers` in `process.memoryUsage()`, not `heapUsed` — buffer memory is invisible to `heapUsed`, which is exactly our risk profile
+- [x] Kill the app mid-recording; confirm a playable WAV and correct queue recovery
+- [x] Sleep the Mac mid-recording; confirm duration is still right
+- [x] Fill the disk mid-recording; confirm the failure is *reported*
+- [x] Measure first window open; pre-warm **only if** above 1 s (~50 MB permanent cost)
+- [x] Verify `enableExternalBuffer` and the `@rpath` finding still hold after any sherpa upgrade
 - [x] LICENSE file — `package.json` and README both claim MIT and there is no LICENSE *(added in `6778be2`)*
-- [ ] Re-check the first-run download on a **real, slow connection** — phase 9 verified it against localhost, where the transfer finishes before the bar can show the 0–90% span that dominates a real one
+- [x] Re-check the first-run download on a **real, slow connection** — phase 9 verified it against localhost, where the transfer finishes before the bar can show the 0–90% span that dominates a real one
+
+### What the build actually found
+
+This phase is written as a list of measurements, and measurements can pass. Three
+did not, and each was a case where the recording survived but the app did not
+tell anyone — the failure mode this product can least afford, because the user
+finds out an hour later when the meeting is over.
+
+**A full disk crashed the app.** `TrackWriter` attached a `drain` handler to its
+WAV stream and no `error` handler. Node throws on an unhandled stream `'error'`,
+and main had no `uncaughtException` net either — the ASR and index workers had
+both had one since they were written; the one process holding a live recording
+did not. So a disk filling up mid-meeting took down the app and the meeting with
+it. It now records the first failure, reports it once through the capture
+`error` event the controller already listens to, stops writing, and still
+finalizes the session. The audio captured before the disk filled is kept, which
+is the whole point: 4 minutes 15 seconds of a meeting is worth more than a
+crash report.
+
+Only the *first* error is kept and reported. A full disk produces one ENOSPC per
+buffer, thirty a second, and the hundredth is no more informative than the
+first — but it would bury it.
+
+**A crash mid-recording orphaned the meeting permanently.** This is the sharp
+edge of "the filesystem is the queue". A session is complete when `meta.json`
+exists, which makes crash recovery free for every *transcription* failure — and
+means a crash during *recording* leaves a directory that `listSessions` skips
+and `resumePending` skips, because `readMeta` returns null. The WAVs sat on disk
+and nothing ever looked at them again. `repairWavHeader` had been written for
+exactly this and was never called from anywhere: dead code guarding the case it
+was written for.
+
+The fix is not a queue or a state file — either would break the invariant. It is
+to finish the job the crashed process did not: patch the headers from the byte
+counts on disk, write the `meta.json` that was never written, and let the
+ordinary pending path take it from there. It runs strictly *before*
+`resumePending`, so a recovered session is transcribed in the same pass as
+everything else that was waiting.
+
+What recovery cannot reconstruct is stated rather than guessed. `startOffsetMs`
+is 0 for both tracks, because the real value came from comparing two
+first-buffer timestamps held in memory and that measurement died with the
+process — zero is what "we do not know" looks like in this schema, and it is
+correct whenever both tracks started together, which is the normal case.
+`startedAt` comes from the directory name, which is generated from the clock at
+`start()`; mtime would be the crash time. The session is flagged `recovered`
+and titled as such, because it may be missing its last seconds and the user
+should know which meeting that applies to.
+
+Recovery also refuses any directory that already has a `transcript.json`. The
+queue writes `meta.json` long before a transcript exists, so that combination
+cannot arise on its own — but the vault is the user's folder and they may
+delete files in it, and inventing a `meta.json` there would make a finished
+session look pending, hand it back to the queue, and overwrite a transcript
+that might have been corrected by hand. A recovery pass that destroys the work
+it exists to rescue is worse than no recovery pass, so the guard is
+unconditional rather than conditional on how the state arose.
+
+**A WAV could claim more audio than it held.** Found by the disk-full harness,
+not by reading the code. `#bytes` counts what was handed to the stream, and on a
+failed write that runs ahead of what reached the disk — the header claimed
+8 256 000 bytes in an 8 171 520-byte file. 84 KB of samples that do not exist,
+positioned exactly at the end of the recording, which is the part someone
+recovering a crashed meeting most wants. `finalizeWavHeader` now clamps to the
+real file size.
+
+**The two measurements that passed, passed clearly.** First window open is
+**152 ms cold** against the production bundle, so the pre-warm is not worth
+~50 MB resident on a menu-bar app that may sit idle all day — the checklist's
+own threshold was 1 s. And both sherpa invariants still hold on 1.13.4 under
+Electron 43.2.0: it loads with no `DYLD_LIBRARY_PATH`, and
+`enableExternalBuffer: true` still throws *"External buffers are not allowed"*,
+so passing `false` remains load-bearing rather than merely defensive.
+
+### Verification
+
+The two-hour soak ran a real capture pipeline through 120 minutes of audio
+(180,000 buffer pushes, 219.7 MB of WAV on disk, 124.1 min wall clock) with
+**zero capture errors**. What it was actually watching is `external` and
+`arrayBuffers`, not `heapUsed`: the audio never enters the JS heap, so a leak
+of the thing this app moves most of would be invisible in the number people
+usually quote.
+
+| | early | late | drift |
+|---|---|---|---|
+| `external` | 2.5 MB | 2.5 MB | −0.9% |
+| `arrayBuffers` | 0.8 MB | 0.8 MB | −2.6% |
+| `heapUsed` | 5.1 MB | 5.1 MB | +1.8% |
+| `rss` | 42.6 MB | 31.6 MB | −26.0% |
+
+Peaks were 3.2 MB `external` and 1.6 MB `arrayBuffers` — bounded, not growing.
+RSS *falling* over two hours is the OS reclaiming pages from an idle process,
+which is the expected shape and not a measurement of ours.
+
+Two results are worth separating from the pass counts, because they are
+evidence rather than assertions.
+
+**macOS's own decoder judged the crash recovery.** `afinfo` on an unrecovered
+file returns `AudioFileOpenURL failed` — a header claiming zero length is not a
+file anything will open. After recovery the same bytes read as a clean
+`5.8 sec` WAVE. That is the difference between the audio being on disk and the
+audio being *recoverable*, and it is not something the header arithmetic in the
+harness could have established about itself.
+
+**The real suspend corrected a wrong assumption.** `pmset sleepnow` mid-recording:
+the OS delivered `suspend` and `resume` to a live recording, the discontinuity
+landed at 4.9 s where the suspend hit, and the duration reported audio rather
+than wall clock. But the assertion that the audio loss would roughly equal the
+16-second gap **failed** — only 2.1 s was lost. `pmset -g log` explains it: the
+machine entered true `Sleep` for about 4 seconds and then `DarkWake`, a
+low-power state where the CPU keeps running. The event-loop freeze is a fraction
+of the span between the two events. The assertion now checks what is actually
+true — that time was lost, and that the loss is bounded by the gap — because the
+original encoded a belief about macOS rather than a property of the recording.
+
+Two harness bugs, both mine. Pushing PCM in a tight synchronous loop overruns
+the write stream's high-water mark and trips the *backpressure* path, which
+drops buffers and marks its own discontinuity — a different mechanism than the
+one under test, and one that quietly moved the suspend mark from 3.0 s to 2.2 s
+and shortened the file. Real-rate pacing fixed it. And destroying the last
+window in a bare Electron harness quits the app before the next iteration:
+`window-all-closed` defaults to exit, which the real app overrides for a better
+reason — it is a menu-bar app and closing the window must not end a meeting.
 
 ---
 
@@ -867,5 +990,6 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phases 5, 6, 7, 8 and 9 are done. Only phase 10
-remains, and it gates any release.
+without its predecessor. **All ten phases are done.** The build order is
+complete; what remains before a release is packaging and signing, plus the two
+open questions below that need a real Ollama and real long meetings to settle.

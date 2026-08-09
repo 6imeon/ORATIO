@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderConfig, ProviderId, Session, Transcript } from '@shared/types'
+import { ExportMenu } from '../components/ExportMenu'
 import { SummaryPane } from '../components/SummaryPane'
 import { TranscriptDrawer } from '../components/TranscriptDrawer'
 import { useDrawerState } from '../hooks/useDrawerState'
@@ -12,6 +13,7 @@ const PROVIDER_LABELS: Record<ProviderId, string> = {
   ollama: 'Ollama',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  openrouter: 'OpenRouter',
 }
 
 /**
@@ -199,7 +201,12 @@ export function MeetingView({ session }: Props): React.JSX.Element {
           the user never learns exists; one that is visibly unavailable, with
           the reason in its tooltip, teaches the sequence.
         */}
-        <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div
+          className="flex items-center gap-2"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <ExportMenu sessionId={sessionId} hasTranscript={transcript !== null} />
+
           {summary.status === 'running' ? (
             <button
               type="button"

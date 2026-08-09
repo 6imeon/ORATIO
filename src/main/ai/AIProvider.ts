@@ -50,9 +50,13 @@ export type { SummarySection }
  * Emitted on its own line before each section, so the renderer can route a
  * token stream into separate UI blocks as it arrives.
  *
- * Deliberately not Markdown: `§§` cannot appear in ordinary speech-derived
- * text, so a naive `startsWith` check on each completed line is a correct
- * parser. Markdown headings would collide with headings inside the content.
+ * Deliberately not Markdown: a section sign cannot appear in ordinary
+ * speech-derived text, so a per-line check is a sound parser where Markdown
+ * headings would collide with headings inside the content.
+ *
+ * This is what we ASK for, not what the parser requires. Models drop one of
+ * the two signs in practice — an OpenRouter run emitted `§` on all five
+ * headers — so `classify` matches one or more and anchors on the section name.
  */
 export const SECTION_MARKER = '§§ '
 
@@ -194,9 +198,24 @@ export function createSectionParser(): {
   let buffer = ''
   let current: SummarySection = 'Summary'
 
+  /**
+   * Tolerant of how many section signs the model actually emitted.
+   *
+   * The prompt asks for `§§ `, and requiring exactly that looked like a
+   * correct parser — `§§` cannot occur in speech-derived text. But a real
+   * OpenRouter run emitted a single `§` on every one of the five headers, so
+   * nothing classified, all five fell through as body text, and the whole
+   * summary rendered as one undifferentiated Summary block.
+   *
+   * Matching one-or-more `§` costs nothing in false positives: a line that
+   * begins with a section sign AND whose remainder is exactly a known section
+   * name is a header by any reasonable reading. Anchoring on the name is what
+   * makes this safe — an unknown name still returns null and stays body text.
+   */
   const classify = (line: string): SummarySection | null => {
-    if (!line.startsWith(SECTION_MARKER)) return null
-    const name = line.slice(SECTION_MARKER.length).trim()
+    const match = /^§+\s*(.+)$/.exec(line.trim())
+    if (!match) return null
+    const name = match[1]!.trim()
     return SUMMARY_SECTIONS.find((s) => s.toLowerCase() === name.toLowerCase()) ?? null
   }
 

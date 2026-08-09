@@ -4,6 +4,7 @@ import { AUDIO_PORT_CHANNEL, type AudioPortMessage } from '@shared/audioPort'
 import type {
   AIDoneEvent,
   AITokenEvent,
+  ExportRequest,
   NavTarget,
   PermissionState,
   StoredSummary,
@@ -12,6 +13,7 @@ import type {
   StartRecordingResult,
 } from '@shared/ipc'
 import type {
+  KeyedProviderId,
   ModelId,
   ModelInfo,
   ModelState,
@@ -57,6 +59,13 @@ const api = {
       ipcRenderer.invoke(IPC.SESSION_NOTES_SET, id, md),
     remove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_DELETE, id),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_REVEAL, id),
+    /**
+     * Write this meeting to a file the user picks. Resolves with the path, or
+     * null when they cancelled the save dialog — which is a normal outcome, not
+     * an error, so the caller checks for null rather than catching.
+     */
+    exportTo: (req: ExportRequest): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.SESSION_EXPORT, req),
     /** Ids and snippets only — never whole transcripts (UI.md §0). */
     search: (q: string): Promise<SearchHit[]> => ipcRenderer.invoke(IPC.SESSION_SEARCH, q),
     /**
@@ -169,7 +178,7 @@ const api = {
 
   ai: {
     providers: (): Promise<ProviderConfig[]> => ipcRenderer.invoke(IPC.AI_PROVIDERS),
-    setKey: (provider: 'anthropic' | 'openai', key: string): Promise<void> =>
+    setKey: (provider: KeyedProviderId, key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.AI_SET_KEY, provider, key),
     /**
      * Summarise a meeting. Resolves when the stream ends; the text itself

@@ -2,7 +2,12 @@ import log from 'electron-log/main'
 import type { ProviderConfig, ProviderId, Settings, Transcript } from '@shared/types'
 import { createSectionParser, type AIProvider, type SummarySection } from './AIProvider'
 import { OllamaProvider, OLLAMA_DEFAULT_URL } from './OllamaProvider'
-import { AnthropicProvider, OpenAIProvider } from './CloudProviders'
+import {
+  AnthropicProvider,
+  OpenAIProvider,
+  OpenRouterProvider,
+  OPENROUTER_BASE_URL,
+} from './CloudProviders'
 import { getApiKey } from '../storage/settings'
 
 /**
@@ -18,9 +23,25 @@ export async function resolveProvider(settings: Settings): Promise<AIProvider | 
   if (!id) return null
 
   const config = settings.providers.find((p) => p.id === id)
-  if (!config?.enabled) return null
+  if (!config) {
+    log.warn('[ai] active provider is not in the provider list', { id })
+    return null
+  }
+  /**
+   * Logged because this state is invisible from the UI: the Summarise button
+   * is disabled whenever this returns null, so the user sees a greyed-out
+   * control and no reason for it. A provider selected but not enabled was a
+   * real bug — the settings screen set activeProvider without setting enabled —
+   * and it cost a debugging session to find. If it ever recurs, the log says so.
+   */
+  if (!config.enabled) {
+    log.warn('[ai] active provider is selected but not enabled', { id })
+    return null
+  }
 
-  return buildProvider(config)
+  const provider = await buildProvider(config)
+  if (!provider) log.warn('[ai] provider could not be built — usually a missing API key', { id })
+  return provider
 }
 
 async function buildProvider(config: ProviderConfig): Promise<AIProvider | null> {
@@ -34,6 +55,12 @@ async function buildProvider(config: ProviderConfig): Promise<AIProvider | null>
     case 'openai': {
       const key = await getApiKey('openai')
       return key ? new OpenAIProvider(key, config.model) : null
+    }
+    case 'openrouter': {
+      const key = await getApiKey('openrouter')
+      return key
+        ? new OpenRouterProvider(key, config.model, config.baseUrl ?? OPENROUTER_BASE_URL)
+        : null
     }
     default:
       return null
@@ -70,12 +97,16 @@ export async function autoDetectProvider(settings: Settings): Promise<Settings> 
 /**
  * True when the provider sends the transcript off this machine.
  *
- * Drives the disclosure in the UI. Stated as a positive property of the
- * provider rather than inferred in the renderer, so a provider added later
- * cannot quietly default to "local" by omission.
+ * Drives the disclosure in the UI. Written as an explicit list of the ones that
+ * stay LOCAL, so the default for anything new is "cloud" — the safe direction.
+ * The previous form listed the cloud providers instead, which meant a provider
+ * added later was silently treated as local until someone remembered to update
+ * this line, and the failure mode was a missing privacy warning.
  */
+const LOCAL_PROVIDERS: readonly ProviderId[] = ['ollama']
+
 export function isCloudProvider(id: ProviderId): boolean {
-  return id === 'anthropic' || id === 'openai'
+  return !LOCAL_PROVIDERS.includes(id)
 }
 
 export interface SummarizeCallbacks {
