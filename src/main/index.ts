@@ -284,6 +284,21 @@ function claimMic(id: number): boolean {
   return true
 }
 
+/**
+ * `--color-ground` from styles.css, as hex, for the two themes.
+ *
+ * Duplicated from CSS because a `BrowserWindow` background is set before any
+ * stylesheet exists and cannot read a custom property. Keep in step with the
+ * `--color-ground` tokens — a mismatch shows as a one-frame flash of the wrong
+ * shade on launch and on every theme change, which is subtle enough to survive
+ * review but is exactly the seam this is here to hide.
+ */
+const GROUND = { light: '#f9fafb', dark: '#151312' } as const
+
+function groundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? GROUND.dark : GROUND.light
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1100,
@@ -294,6 +309,25 @@ function createWindow(): BrowserWindow {
     titleBarStyle: 'hiddenInset',
     vibrancy: 'sidebar',
     visualEffectState: 'active',
+    /**
+     * An opaque floor under the vibrancy layer.
+     *
+     * `body` is transparent so vibrancy shows through, which leaves the React
+     * root as the only thing painting the window. Any moment that root does
+     * not cover the whole frame — AppKit rebuilding the vibrancy layer on a
+     * `themeSource` change is the one seen in the wild; a resize the renderer
+     * has not caught up with is the same bug — the desktop shows through
+     * below the content.
+     *
+     * The roots were also moved off `h-screen` (`100vh`, which tracks the
+     * viewport) onto `h-full`, but that alone still trusts the renderer to be
+     * current.
+     *
+     * Set on the window so the floor cannot depend on the renderer being
+     * up to date. Deliberately NOT a fix in CSS: no viewport-relative unit can
+     * cover a frame the viewport does not yet know about.
+     */
+    backgroundColor: groundColor(),
     webPreferences: {
       // Must match the filename emitted by electron.vite.config.ts
       // (out/preload/index.cjs). A wrong path here fails SILENTLY: the
@@ -497,6 +531,14 @@ void app.whenReady().then(async () => {
     onSettingsChanged: (next) => {
       meetingSuggestions.current = next.meetingSuggestions
       detector?.refresh()
+    },
+    onThemeColorChanged: (dark) => {
+      const ground = dark ? GROUND.dark : GROUND.light
+      for (const win of BrowserWindow.getAllWindows()) {
+        // The 1x1 mic host has no visible frame and no business repainting.
+        if (win === micHostWindow) continue
+        win.setBackgroundColor(ground)
+      }
     },
   })
 

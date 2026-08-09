@@ -58,7 +58,7 @@ export function FirstRunView({ settings, onReady, onSkip }: Props): React.JSX.El
   const percent = Math.round((state?.progress ?? 0) * 100)
 
   return (
-    <div className="flex h-screen items-center justify-center bg-(--color-ground) p-8">
+    <div className="flex h-full items-center justify-center bg-(--color-ground) p-8">
       <div className="w-full max-w-md">
         <h1 className="text-lg font-semibold text-(--color-ink)">Set up Oratio</h1>
         <p className="mt-1.5 text-[13px] leading-relaxed text-(--color-ink-dim)">

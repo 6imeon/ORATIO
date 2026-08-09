@@ -72,6 +72,8 @@ interface Deps {
    * or stop when the toggle moves rather than at the next launch.
    */
   onSettingsChanged?: (settings: Settings) => void
+  /** Repaint the window's opaque floor after a theme change. @see groundColor */
+  onThemeColorChanged?: (dark: boolean) => void
   /**
    * Tell every window a session changed on disk. Main owns this because only
    * main knows how many windows there are — see `broadcast` in index.ts.
@@ -440,6 +442,17 @@ export function registerIpc(deps: Deps): void {
      * dialog. Set here so the renderer and the frame can never disagree.
      */
     nativeTheme.themeSource = next.theme
+
+    /**
+     * Move the opaque floor with the theme.
+     *
+     * The floor is what stops the desktop showing through while AppKit
+     * rebuilds the vibrancy layer — which is precisely what the line above
+     * triggers, so this is the one moment it is guaranteed to be needed. Left
+     * stale it merely swaps the bug: a light window flashing its dark floor
+     * instead of the wallpaper. See `groundColor` in index.ts.
+     */
+    deps.onThemeColorChanged?.(nativeTheme.shouldUseDarkColors)
 
     // Meeting detection owns a child process, so turning it off has to reach
     // the detector rather than only the JSON — see `refresh`.

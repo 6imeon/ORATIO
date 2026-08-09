@@ -110,7 +110,7 @@ export function App(): React.JSX.Element {
    * resolves in a single tick, and a flash of the empty state before the setup
    * screen would look like a bug.
    */
-  if (firstRun.step === 'checking') return <div className="h-screen bg-(--color-ground)" />
+  if (firstRun.step === 'checking') return <div className="h-full bg-(--color-ground)" />
   if (firstRun.step === 'model') {
     return (
       <FirstRunView
@@ -121,8 +121,15 @@ export function App(): React.JSX.Element {
     )
   }
 
+  /*
+   * h-full, not h-screen. `100vh` tracks the viewport, which on macOS can lag
+   * the frame while AppKit rebuilds the vibrancy layer (a theme change does
+   * this) — the root then stops short of the bottom and, because `body` is
+   * transparent for vibrancy, the desktop shows through. html/body/#root all
+   * carry `height: 100%`, so `h-full` resolves against the real frame.
+   */
   return (
-    <div className="flex h-screen bg-(--color-ground) text-(--color-ink)">
+    <div className="flex h-full bg-(--color-ground) text-(--color-ink)">
       <aside className="flex w-64 shrink-0 flex-col border-r border-(--color-line)">
         {/* Sits below the traffic lights — titleBarStyle is hiddenInset. */}
         <div className="h-11 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties} />
