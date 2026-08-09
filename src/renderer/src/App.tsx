@@ -122,11 +122,14 @@ export function App(): React.JSX.Element {
   }
 
   /*
-   * h-full, not h-screen. `100vh` tracks the viewport, which on macOS can lag
-   * the frame while AppKit rebuilds the vibrancy layer (a theme change does
-   * this) — the root then stops short of the bottom and, because `body` is
-   * transparent for vibrancy, the desktop shows through. html/body/#root all
-   * carry `height: 100%`, so `h-full` resolves against the real frame.
+   * `h-full`, not `h-screen`: html/body/#root all carry `height: 100%`, so this
+   * resolves against that chain rather than against `100vh`.
+   *
+   * An earlier version of this comment blamed vibrancy and a lagging viewport
+   * for a window that painted only its top ~315px. That was wrong — the cause
+   * was an `sr-only` radio escaping to document coordinates (see
+   * SegmentedControl in SettingsView.tsx). Every element here measured exactly
+   * the window height throughout.
    */
   return (
     <div className="flex h-full bg-(--color-ground) text-(--color-ink)">

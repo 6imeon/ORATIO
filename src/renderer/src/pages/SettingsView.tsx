@@ -299,9 +299,20 @@ function SegmentedControl<T extends string>({
           {options.map((opt) => {
             const selected = opt.value === value
             return (
+              /*
+               * `relative` is load-bearing, not decoration.
+               *
+               * `sr-only` is `position: absolute`, so without a positioned
+               * ancestor it resolves against the initial containing block —
+               * escaping the scroll pane and landing at DOCUMENT coordinates.
+               * Measured: the last of these 1px inputs sat at top=1195, which
+               * stretched html.scrollHeight to 1196 inside a 760px window and
+               * clipped the window's paint at ~315px, leaving the bottom 58%
+               * as bare background. `relative` keeps it inside this label.
+               */
               <label
                 key={opt.value}
-                className={`cursor-pointer rounded px-2.5 py-1 text-xs ${
+                className={`relative cursor-pointer rounded px-2.5 py-1 text-xs ${
                   selected
                     ? 'bg-(--color-surface) font-medium text-(--color-ink) shadow-sm'
                     : 'text-(--color-ink-dim) hover:text-(--color-ink)'

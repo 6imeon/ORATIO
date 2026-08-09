@@ -444,13 +444,11 @@ export function registerIpc(deps: Deps): void {
     nativeTheme.themeSource = next.theme
 
     /**
-     * Move the opaque floor with the theme.
+     * Keep the window's pre-paint background in step with the theme.
      *
-     * The floor is what stops the desktop showing through while AppKit
-     * rebuilds the vibrancy layer — which is precisely what the line above
-     * triggers, so this is the one moment it is guaranteed to be needed. Left
-     * stale it merely swaps the bug: a light window flashing its dark floor
-     * instead of the wallpaper. See `groundColor` in index.ts.
+     * It only shows in the frames before the renderer paints, so a stale value
+     * is a flash of the wrong shade on the next launch rather than a lasting
+     * error. See `groundColor` in index.ts.
      */
     deps.onThemeColorChanged?.(nativeTheme.shouldUseDarkColors)
 

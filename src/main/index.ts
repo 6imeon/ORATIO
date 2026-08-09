@@ -310,22 +310,12 @@ function createWindow(): BrowserWindow {
     vibrancy: 'sidebar',
     visualEffectState: 'active',
     /**
-     * An opaque floor under the vibrancy layer.
+     * The colour of the window before the renderer's first paint.
      *
-     * `body` is transparent so vibrancy shows through, which leaves the React
-     * root as the only thing painting the window. Any moment that root does
-     * not cover the whole frame — AppKit rebuilding the vibrancy layer on a
-     * `themeSource` change is the one seen in the wild; a resize the renderer
-     * has not caught up with is the same bug — the desktop shows through
-     * below the content.
-     *
-     * The roots were also moved off `h-screen` (`100vh`, which tracks the
-     * viewport) onto `h-full`, but that alone still trusts the renderer to be
-     * current.
-     *
-     * Set on the window so the floor cannot depend on the renderer being
-     * up to date. Deliberately NOT a fix in CSS: no viewport-relative unit can
-     * cover a frame the viewport does not yet know about.
+     * `body` is transparent so the vibrancy layer shows through, which means
+     * the window would otherwise flash white on launch under a dark theme.
+     * This only covers the frames before the first paint — it is not a fix for
+     * anything the renderer does afterwards.
      */
     backgroundColor: groundColor(),
     webPreferences: {
