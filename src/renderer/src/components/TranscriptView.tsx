@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { findTurnAt, formatClock, type Turn } from '../lib/turns'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { formatClock, type Turn } from '../lib/turns'
+import { usePlayback } from '../hooks/usePlayback'
+import { TransportBar } from './TransportBar'
 
 interface Props {
   sessionId: string
@@ -57,10 +59,17 @@ export function TranscriptView({
     })()
   }, [sessionId])
 
+  /**
+   * All transport state lives in the hook: one playhead on the shared session
+   * clock, two elements taking turns being the one that runs. This view owns
+   * only the rendering of it.
+   */
+  const playback = usePlayback(turns, urls, micRef, systemRef)
+
   // Null for both tracks means the audio was discarded — this session was
   // recorded with "don't keep audio", so there is nothing to play and the
   // lines must not pretend to be clickable.
-  const hasAudio = Boolean(urls && (urls.mic || urls.system))
+  const hasAudio = playback.available
 
   /**
    * Move the highlight.
@@ -92,34 +101,48 @@ export function TranscriptView({
     [turns, onActiveTime],
   )
 
-  const onTimeUpdate = useCallback(
-    (el: HTMLAudioElement) => {
-      // Binary search, not a linear scan — 66×/s over a few thousand turns
-      // (UI.md §4).
-      setActive(findTurnAt(turns, el.currentTime * 1000))
-    },
-    [turns, setActive],
-  )
+  /**
+   * Mirror the hook's active turn onto the DOM.
+   *
+   * The hook computes the index (binary search, off `timeupdate`); this moves
+   * the class. Keeping the two separate is what keeps React reconciliation off
+   * a path that fires 66×/s — see `setActive` above.
+   */
+  useEffect(() => {
+    setActive(playback.activeIndex)
+  }, [playback.activeIndex, setActive])
 
-  function play(turn: Turn): void {
-    if (!hasAudio) return
-    const el = turn.speaker === 'me' ? micRef.current : systemRef.current
-    const other = turn.speaker === 'me' ? systemRef.current : micRef.current
-    if (!el) return
+  /**
+   * Clicking a line plays from it — unless it is the line already playing, in
+   * which case it pauses. Clicking the playing line and having it jump back to
+   * its own start is the behaviour that made pausing impossible before.
+   *
+   * Read through a ref rather than closed over directly: `playback` gets a new
+   * identity on every `timeupdate`, so a plain dependency here would hand
+   * every row a fresh `onPlay` 66×/s and re-render the entire transcript.
+   * The ref keeps `play` stable for the life of the view.
+   */
+  const playbackRef = useRef(playback)
+  playbackRef.current = playback
 
-    other?.pause()
-    // Timestamps are on a shared clock across both tracks, so seeking is a
-    // direct conversion with no per-track offset maths here.
-    el.currentTime = turn.startMs / 1000
-    void el.play()
-    setActive(turn.index)
-  }
+  const play = useCallback((turn: Turn): void => {
+    const p = playbackRef.current
+    if (!p.available) return
+    if (p.playing && p.activeIndex === turn.index) p.pause()
+    else p.playTurn(turn)
+  }, [])
 
-  function stopAll(): void {
-    micRef.current?.pause()
-    systemRef.current?.pause()
-    setActive(-1)
-  }
+  /**
+   * Row registration, stable for the life of the view.
+   *
+   * `TurnRow` is memoised, so every prop it receives has to keep its identity
+   * across renders or the memo does nothing — an inline `register` closure
+   * per row would defeat it on the very first re-render.
+   */
+  const register = useCallback((index: number, node: HTMLElement | null): void => {
+    if (node) rowRefs.current.set(index, node)
+    else rowRefs.current.delete(index)
+  }, [])
 
   // Targeted reveal. Runs after paint so the row exists; `center` rather than
   // `nearest` because arriving here means the user asked to be taken
@@ -133,14 +156,14 @@ export function TranscriptView({
   }, [revealTurn, setActive])
 
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto overscroll-contain px-5 py-3">
+    <div className="flex h-full flex-col">
       {urls?.mic && (
         <audio
           ref={micRef}
           src={urls.mic}
           preload="metadata"
-          onTimeUpdate={(e) => onTimeUpdate(e.currentTarget)}
-          onEnded={stopAll}
+          onTimeUpdate={(e) => playback.onTimeUpdate('mic', e.currentTarget)}
+          onEnded={() => playback.onEnded('mic')}
         />
       )}
       {urls?.system && (
@@ -148,35 +171,36 @@ export function TranscriptView({
           ref={systemRef}
           src={urls.system}
           preload="metadata"
-          onTimeUpdate={(e) => onTimeUpdate(e.currentTarget)}
-          onEnded={stopAll}
+          onTimeUpdate={(e) => playback.onTimeUpdate('system', e.currentTarget)}
+          onEnded={() => playback.onEnded('system')}
         />
       )}
 
-      {urls && !hasAudio && (
-        <p className="mb-2 text-xs text-(--color-ink-faint)">
-          Audio was discarded for this meeting. The transcript is all that was kept.
-        </p>
-      )}
+      {hasAudio && turns.length > 0 && <TransportBar playback={playback} />}
 
-      {turns.map((turn) => (
-        <TurnRow
-          key={turn.index}
-          turn={turn}
-          hasAudio={hasAudio}
-          onPlay={play}
-          register={(node) => {
-            if (node) rowRefs.current.set(turn.index, node)
-            else rowRefs.current.delete(turn.index)
-          }}
-        />
-      ))}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
+        {urls && !hasAudio && (
+          <p className="mb-2 text-xs text-(--color-ink-faint)">
+            Audio was discarded for this meeting. The transcript is all that was kept.
+          </p>
+        )}
 
-      {turns.length === 0 && (
-        <p className="py-4 text-sm text-(--color-ink-dim)">
-          No speech was detected in this recording.
-        </p>
-      )}
+        {turns.map((turn) => (
+          <TurnRow
+            key={turn.index}
+            turn={turn}
+            hasAudio={hasAudio}
+            onPlay={play}
+            register={register}
+          />
+        ))}
+
+        {turns.length === 0 && (
+          <p className="py-4 text-sm text-(--color-ink-dim)">
+            No speech was detected in this recording.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -194,7 +218,7 @@ export function TranscriptView({
  * the whole transcript is one of the four things we do that Granola doesn't.
  * Keyboard access is restored with role/tabIndex/Enter rather than given up.
  */
-function TurnRow({
+const TurnRow = memo(function TurnRow({
   turn,
   hasAudio,
   onPlay,
@@ -203,13 +227,13 @@ function TurnRow({
   turn: Turn
   hasAudio: boolean
   onPlay: (t: Turn) => void
-  register: (node: HTMLElement | null) => void
+  register: (index: number, node: HTMLElement | null) => void
 }): React.JSX.Element {
   const mine = turn.speaker === 'me'
 
   return (
     <div
-      ref={register}
+      ref={(node) => register(turn.index, node)}
       // `mousedown`, not click: the action is not cancellable, and acting on
       // press rather than release saves ~50 ms of perceived latency — VS
       // Code's measurement (UI.md §9).
@@ -222,6 +246,14 @@ function TurnRow({
       }}
       role={hasAudio ? 'button' : undefined}
       tabIndex={hasAudio ? 0 : undefined}
+      /*
+       * Deliberately static — "Play from 2:14" rather than flipping to
+       * "Pause". A label that tracked playback would have to be a prop, and a
+       * prop that changes on every play/pause re-renders every row in the
+       * transcript, which is exactly the cost `content-visibility` is here to
+       * avoid. The transport bar carries the live play/pause state instead.
+       */
+      aria-label={hasAudio ? `Play from ${formatClock(turn.startMs)}` : undefined}
       // `turn` carries content-visibility; see styles.css.
       className={`turn group -mx-2 rounded-md px-2 py-2 transition-colors focus-visible:ring-2 focus-visible:ring-(--color-me) focus-visible:outline-none ${
         hasAudio ? 'cursor-pointer hover:bg-(--color-raised)' : ''
@@ -249,4 +281,4 @@ function TurnRow({
       <p className="pl-3 text-[13px] leading-relaxed text-(--color-ink)">{turn.text}</p>
     </div>
   )
-}
+})

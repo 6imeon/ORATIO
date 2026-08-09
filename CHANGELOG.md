@@ -13,6 +13,19 @@ for what has to land first.
 
 ### Added
 
+- **Transcript audio has a real transport: play, pause, scrub, and speed.**
+  Playback was previously click-a-line-to-hear-it with no way to stop it and no
+  way to resume — clicking the line that was already playing restarted it. There
+  is now a bar above the transcript with play/pause, a scrubber, ±10 s, previous
+  and next turn, and speeds up to 2×. Space plays and pauses, ← and → skip, and
+  clicking the line that is currently playing pauses it. Space is ignored while
+  the cursor is in the notes, so it still types a space where you would expect.
+
+  Playback also continues past the end of a turn now. The two tracks are
+  separate files by design, so following a conversation across a handoff means
+  moving the playhead between them; it used to simply stop at the first change
+  of speaker.
+
 - **Your microphone no longer puts the other person's words in your mouth.**
   Recording through speakers instead of headphones means the mic also hears the
   meeting audio from the room, so the transcript recorded you saying whatever

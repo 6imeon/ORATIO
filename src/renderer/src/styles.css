@@ -126,6 +126,46 @@ nav {
   background: color-mix(in oklch, var(--color-me) 12%, transparent);
 }
 
+/*
+ * The transport scrubber.
+ *
+ * A real <input type="range"> so it keeps keyboard operation and the slider
+ * role for free; only the paint is ours. `appearance: none` on the track plus
+ * per-engine thumb selectors is the whole of it — WebKit is the only engine
+ * that matters here, but the standard `::-moz-` pair costs nothing and keeps
+ * this honest if the renderer ever runs elsewhere.
+ */
+.scrubber {
+  appearance: none;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-line);
+  cursor: pointer;
+}
+
+.scrubber::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-ink);
+  /* Centres an 11px thumb on a 3px track. */
+  margin-top: -4px;
+}
+
+.scrubber::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-ink);
+}
+
+.scrubber:focus-visible {
+  outline: 2px solid var(--color-me);
+  outline-offset: 3px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
