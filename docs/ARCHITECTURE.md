@@ -4,8 +4,8 @@
 **Date:** 8 August 2026
 **Scope:** macOS 14.2+, English-only, Electron 43 + TypeScript
 
-Companion to [RESEARCH.md](RESEARCH.md), which covers *why Electron* and the
-competitive landscape. This document covers *how the thing is built*.
+This document covers *how the thing is built*. The prior research on *why
+Electron* and the competitive landscape is kept as a private working note.
 
 Everything marked **[verified]** was tested on this machine against the
 installed dependency versions. Everything marked **[reported]** comes from

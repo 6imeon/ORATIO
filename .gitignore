@@ -12,6 +12,9 @@ release/
 # Local agent working notes — not part of the project
 CLAUDE.md
 
+# Private research notes — competitive analysis and rationale kept local
+docs/RESEARCH.md
+
 # Local env / scratch
 .env
 .env.local
