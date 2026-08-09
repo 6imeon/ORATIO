@@ -47,14 +47,19 @@ merged.sort((a, b) => a.startMs - b.startMs)
 
 Each track is VAD'd independently. Continuous far-end audio never produces the
 500 ms silence gap that `minSilenceDurationMs` needs to split a region, so the
-whole stretch stays one region up to `maxSpeechDuration: 30`
-(`worker/sherpa.ts:279`). A two-second interjection *starts* later than that
-region did, so it sorts after it — even though it happened in the middle.
+whole stretch stays one region up to `maxSpeechDuration` (`worker/sherpa.ts`).
+A two-second interjection *starts* later than that region did, so it sorts after
+it — even though it happened in the middle.
 
 The sort is correct. The granularity is wrong. **Segments genuinely overlap in
 time, and a start-time sort cannot express overlap at all.** That is a data-model
 limit, not a comparator bug, and it is worth being explicit that phase A3 below
 mitigates it rather than solving it.
+
+> **Since fixed by A3**, which lowered that cap from 30 s to 7 s — measured, not
+> guessed. Note the cap is a *target* rather than a ceiling: Silero cuts only
+> where speech probability dips, so it never splits mid-speech, which is both why
+> regions can still exceed it and why the seams stay clean. Details in A3 below.
 
 ---
 
@@ -195,7 +200,9 @@ the right one. Nothing here suggests changing the capture architecture.
 
 ## 4. Phases
 
-Ordered by payoff per unit of risk. A1 alone is expected to fix report B.
+Ordered by payoff per unit of risk. A1 alone was expected to fix report B, and
+did. A3 mitigates report A. **A2 is the only phase still outstanding**, and A1
+narrowed its scope to a single case — see below.
 
 ### Phase A1 — per-channel normalization ✅ done 9 Aug 2026
 
@@ -299,24 +306,73 @@ weighing against A3, which addresses a bug that is still open.
 - [ ] Measured correlation for real bleed lands well above the chosen threshold
 - [ ] Measured correlation for the W1 tracks stays near the 0.087 baseline
 
-### Phase A3 — segmentation for overlap
+### Phase A3 — segmentation for overlap ✅ done 9 Aug 2026
 
 Mitigates report A. Full CSS is out of scope — we already have separated tracks,
 so the work is segmentation, not separation.
 
-- [ ] Lower `maxSpeechDuration` from 30 s so a continuous far-end stretch
+`maxSpeechDuration` lowered from 30 s to **7 s**, moved into
+`DEFAULT_VAD_OPTIONS` as `maxSpeechDurationMs`, and mirrored into the energy
+fallback. Measured on the W1 fixture, whose far-end track is one unbroken 17.4 s
+region:
+
+| cap | far-end regions | mic regions | reorders? | seams |
+|---|---|---|---|---|
+| 30 / 20 / 15 s | 2 | 1 | no | clean |
+| 12 s | 3 | 1 | no | clean |
+| 10 / 9 / 8 s | 3 | 2 | yes | **damaged** |
+| **7.5 – 5.5 s** | 3 | 2 | **yes** | **clean** |
+| 5 s | 4 | 2 | yes | damaged |
+| 4 s | 5 | 2 | yes | word cut in half |
+
+**Two corrections found by measuring.** Both matter more than the number.
+
+**Correction 1 — `maxSpeechDuration` is a target, not a ceiling.** Silero only
+cuts where speech probability dips, so it will not split mid-speech at all. At a
+7 s cap the fixture's mic track still returns 11.3 s and 9.6 s regions, and
+setting 10, 7 or 5 s yields *identical* mic regions because those are the only
+two places a cut is available. Consequences:
+
+- The old 30 s value **never bounded decoder backlog**, which was the reason
+  given for it. Only a downstream split can do that.
+- It is also *why the seams stay clean* — a cap that cut at exactly N seconds
+  would slice mid-word. The looseness is the feature.
+
+**Correction 2 — `speechPadMs` does not protect the primary path.** The A3 plan
+said it "exists for this". It is applied only in the energy fallback; sherpa's
+Silero binding exposes no padding parameter, so on the sherpa path the cut is
+unpadded and *where it falls* is the only thing protecting the words either side.
+That is why 7 s was chosen from the middle of a plateau rather than as the
+smallest value that reorders.
+
+- [x] Lower `maxSpeechDuration` from 30 s so a continuous far-end stretch
       becomes several regions an interjection can sort between
-- [ ] Confirm the split does not degrade ASR accuracy at region boundaries
-      (`speechPadMs` exists for this)
+- [x] Confirm the split does not degrade ASR accuracy at region boundaries
+      — by seam inspection, since `speechPadMs` turned out not to apply here
+- [x] Mirror the cap in the energy fallback, which had no cap at all, so both
+      detectors share an ordering unit
 - [ ] Decide whether the transcript model should represent **concurrent** turns
       rather than linearizing them — a start-time sort cannot express overlap,
-      and this is a UI/schema question, not a VAD one
+      and this is a UI/schema question, not a VAD one (open question 1)
 
-**Verification**
+**Verification** — 13/13, run against the real W1 recording.
 
-- [ ] Report A reproduction: an interjection over continuous far-end audio
-      appears between the far-end segments, not after all of them
-- [ ] No regression in transcript quality on the existing W1 recording
+- [x] Report A reproduction: the mic segment now sorts **between** two far-end
+      segments rather than after all of them
+- [x] Regions shrink well below the 30 s baseline (21.0 s → 11.3 s longest)
+- [x] No far-end seam ends in a mid-phrase stub
+- [x] No transcript content lost (119 words retained)
+- [x] `mergeTurns` preserves the interleaving in the UI — 4 turns, `me` between
+      the far-end turns, rather than one far-end block followed by both mic turns
+- [x] Energy fallback splits the continuous track and **strictly** respects the
+      cap (6.7 s longest), and its regions tile the source with no gaps
+- [x] Degenerate inputs safe: empty, digitally silent, constant tone (correctly
+      not speech), and 45 s of pauseless speech-like audio still terminates
+- [x] `pnpm typecheck` and `pnpm build` clean
+
+**Not fixed by this.** Genuinely simultaneous speech still cannot be expressed by
+a flat start-time sort; this makes the ordering unit fine enough that
+interjections land in roughly the right place. See open question 1.
 
 ---
 
@@ -326,6 +382,15 @@ so the work is segmentation, not separation.
    `startMs`/`endMs` and sorts by start. Genuinely concurrent turns cannot be
    rendered faithfully in a flat sorted list. Deciding this is a prerequisite
    for the second half of A3 and touches `UI.md`.
+
+   **Less pressing after A3, and better understood.** A finer ordering unit
+   turned out to be most of the practical fix — the interjection now lands
+   between the far-end segments, and `mergeTurns` preserves that. What remains is
+   the genuinely simultaneous case, where the honest rendering is not a list at
+   all. Worth noting the segments *already* overlap in the data (mic 3036–14354
+   against far-end 3366–14236 on the fixture); the schema can express that, and
+   only the flat sort and the UI discard it. So this is a rendering decision
+   before it is a schema one.
 2. ~~**Is normalization enough on its own, or is A2 required for report B?**~~
    **Answered: yes.** A1 fixes report B on the recording that exhibited it, and
    removes simulated bleed across a −15 to −36 dB range. A2 is refinement, not a

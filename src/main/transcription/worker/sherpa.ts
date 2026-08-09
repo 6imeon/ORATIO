@@ -274,9 +274,12 @@ export class SherpaSession {
           threshold: DEFAULT_VAD_OPTIONS.threshold,
           minSpeechDuration: DEFAULT_VAD_OPTIONS.minSpeechDurationMs / 1000,
           minSilenceDuration: DEFAULT_VAD_OPTIONS.minSilenceDurationMs / 1000,
-          // Cap a region so one unbroken monologue cannot grow into a buffer
-          // that stalls the decoder. Whisper's own window is 30 s.
-          maxSpeechDuration: 30,
+          // Caps region length. Read as an ordering parameter rather than a
+          // memory one — it is what lets an interjection sort into the middle
+          // of a continuous far-end turn instead of after it. Derived in
+          // `vad.ts`; do not raise it back toward Whisper's 30 s window
+          // without re-reading that.
+          maxSpeechDuration: DEFAULT_VAD_OPTIONS.maxSpeechDurationMs / 1000,
         },
         sampleRate: SAMPLE_RATE,
         numThreads: 1,

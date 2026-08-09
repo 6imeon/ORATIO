@@ -272,6 +272,29 @@ for what has to land first.
   When there is too little quiet to judge from, Oratio now leaves the transcript
   alone rather than guessing.
 
+- **Interruptions appeared after the paragraph they interrupted.** Speaking over
+  someone during a long, unbroken stretch of their speech put your words *after*
+  everything they said, rather than at the point where you said them. The words
+  were correct and correctly attributed to you — they were simply in the wrong
+  place, which reads as though you waited politely for a turn you actually cut
+  into.
+
+  Oratio breaks each track into chunks at natural pauses, and orders the
+  transcript by when each chunk begins. Someone talking continuously produced one
+  very long chunk, so a two-second interjection halfway through still *began*
+  later than that chunk did and sorted after all of it. Chunks are now
+  substantially shorter, giving an interruption somewhere to land.
+
+  The new length was chosen by measurement rather than by picking the smallest
+  number that worked: cut too finely and the split falls mid-phrase, which costs
+  accuracy at the join — in testing, words were split in half. The value sits in
+  the middle of a range where the split reliably falls at a real pause.
+
+  Long turns that genuinely *were* uninterrupted still read as one paragraph, so
+  the transcript does not become choppier. Truly simultaneous speech is still
+  listed in sequence rather than shown side by side; that needs a change to how
+  transcripts are displayed, not to how they are chunked.
+
 - **A relative `ORATIO_VAULT` scattered session folders through the working
   tree.** The test-only vault override was passed to `join()` unchecked, so a
   relative value resolved against the current directory — which in `pnpm dev` is
