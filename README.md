@@ -60,33 +60,46 @@ sends audio to a third-party service, and it never asks to see your screen.
 
 ## Status
 
-**Pre-release.** Twelve build phases are done — recording, local transcription,
-search, the UI, the menu-bar app, summarisation, settings, first run, a
-hardening pass, per-app audio exclusion and meeting detection. The hardening
-pass has been through a two-hour soak, a kill mid-recording, a real system
-sleep and a full disk.
+**v0.1.0** — the first release. Recording, local transcription, search,
+summarisation, the menu-bar app, per-app audio exclusion and meeting detection
+all work. It has been through a two-hour soak, a kill mid-recording, a real
+system sleep and a full disk.
 
-What is left before a release is **packaging and code signing**. There is no
-signed build yet, so running Oratio means building it yourself.
+Builds are **not signed or notarized**, so macOS calls the app "damaged" on
+first launch. It isn't — right-click → **Open** once, and it opens normally
+from then on.
 
-See [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for what each phase
-covered and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the process
-topology and the verified platform findings behind it.
+Known gaps are listed in [CHANGELOG.md](CHANGELOG.md); the process topology and
+the verified platform findings behind it are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+[**Download the latest release →**](https://github.com/6imeon/ORATIO/releases/latest)
 
 ## Requirements
 
 | | |
 |---|---|
 | **macOS** | 14.2 or later — required for the Core Audio process-tap API used to capture system audio without a virtual device or kernel extension |
-| **Node** | 22 or later |
-| **pnpm** | 11 or later |
+| **Mac** | Apple Silicon (M1 or later). There is no Intel or Universal build |
+
+Building from source additionally needs **Node 22+** and **pnpm 11+**.
 
 ## Getting started
+
+Download the DMG from the [latest
+release](https://github.com/6imeon/ORATIO/releases/latest), drag Oratio to
+Applications, then **right-click → Open** the first time (see
+[Status](#status)).
+
+Or build it yourself:
 
 ```sh
 pnpm install
 pnpm dev
 ```
+
+Oratio lives in the **menu bar** — there is no Dock icon, and no window opens
+on launch. Click the menu-bar icon to start.
 
 On first launch macOS asks for two separate permissions:
 
@@ -155,7 +168,7 @@ is bundled, so the app download stays small.
 Transcription is **always** local. **Summaries** are the only feature that can
 use an AI provider, and they are entirely opt-in:
 
-- **Ollama** — auto-detected on `localhost:11434` and preferred when present, so
+- **Ollama** — auto-detected on `127.0.0.1:11434` and preferred when present, so
   the whole pipeline stays on your machine
 - **Anthropic** / **OpenAI** / **OpenRouter** — bring your own API key, stored in
   the macOS Keychain
@@ -176,8 +189,6 @@ pnpm dev          # run with hot reload
 pnpm typecheck    # tsc across main, preload and renderer
 pnpm build:mac    # produce a DMG in release/
 ```
-
-Builds are unsigned, so macOS requires right-click → Open on first launch.
 
 ### Layout
 
