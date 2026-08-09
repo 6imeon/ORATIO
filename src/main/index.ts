@@ -503,7 +503,9 @@ void app.whenReady().then(async () => {
   // Registered once, not per recording: the renderer opens a fresh port for
   // each session, and a page reload would otherwise leave main listening to a
   // port nobody is writing to.
-  registerMicPort(capture)
+  // The mute gate is read per buffer rather than captured, so toggling it
+  // takes effect on the next chunk (~40 ms) with nothing to re-register.
+  registerMicPort(capture, () => recording.isMuted())
 
   // Registered here rather than in registerIpc because it reads `pendingNav`,
   // which is window state and lives in this module.

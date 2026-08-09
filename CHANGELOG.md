@@ -13,6 +13,29 @@ for what has to land first.
 
 ### Added
 
+- **You can now mute your microphone while recording.** A mute button sits
+  under the record button, there is an item in the menu-bar menu, and
+  `⌘⇧M` works from anywhere — including from inside the meeting app, which
+  is the only place it is useful when you need it in a hurry.
+
+  **This mutes Oratio's recording, not your meeting.** Teams, Zoom and Slack
+  can still hear you; macOS gives no app any way to read or change another
+  app's microphone, so this can only control what Oratio writes down. The app
+  says so on screen whenever you are muted, because getting that backwards is
+  the one misunderstanding here that actually costs something.
+
+  While muted, your voice is not written to the recording and never reaches
+  transcription. The meeting keeps recording the other side, the timer keeps
+  running, and the menu bar says **Muted** so you can tell at a glance —
+  including noticing you left it on. Mute always switches off when a recording
+  ends, so it can never silently follow you into the next meeting.
+
+  Muted stretches are noted in the meeting's `meta.json`, so a gap in a
+  transcript can be explained as "you were muted here" rather than looking
+  like the app failed. For the same reason the level meter reads `muted`
+  instead of simply sitting flat — a flat meter is what a broken microphone
+  looks like, and that warning has to stay meaningful.
+
 - **You can now delete a meeting from inside Oratio.** Until now the only way
   to remove one was to find its folder in Finder. There is a delete button in
   each sidebar row (on hover) and in the meeting's header, both of which ask

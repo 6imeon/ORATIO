@@ -56,6 +56,18 @@ export interface TrackMeta {
   startOffsetMs: number
 }
 
+/**
+ * A stretch of recording with the microphone muted, in ms from the start of
+ * the session — the same clock as the UI timer.
+ *
+ * Half-open: `startMs` is the first muted moment, `endMs` the first unmuted
+ * one. A range still open when the recording stops is closed at the end.
+ */
+export interface MutedRange {
+  startMs: number
+  endMs: number
+}
+
 /** meta.json — written on clean stop. Its presence marks a session complete. */
 export interface SessionMeta {
   id: string
@@ -77,6 +89,20 @@ export interface SessionMeta {
    * audio.
    */
   discardAudio?: boolean
+  /**
+   * Stretches where the user muted Oratio's microphone, in ms from the start
+   * of the recording.
+   *
+   * Written so the transcript can explain the silence. Muted audio is
+   * recorded as *zeroes of the correct length* rather than skipped — the two
+   * tracks must stay sample-aligned — which means a muted stretch is
+   * indistinguishable from a dead microphone by inspection. This is the only
+   * record of the difference, and the difference matters: one is the app
+   * working, the other is the app failing.
+   *
+   * Absent means nothing was ever muted.
+   */
+  mutedRanges?: MutedRange[]
   /**
    * Set once the audio has actually been deleted, so the UI can distinguish
    * "no audio because you asked" from "no audio because something broke" —
@@ -135,6 +161,12 @@ export interface RecordingState {
    */
   micLevel: number
   systemLevel: number
+  /**
+   * Oratio's own microphone mute. Not a reading of Teams or Zoom — another
+   * app's mute state cannot be observed on macOS (docs/PRIVACY.md §1), so
+   * this is an independent switch that gates the mic track at the source.
+   */
+  muted: boolean
 }
 
 // ---------------------------------------------------------------------------

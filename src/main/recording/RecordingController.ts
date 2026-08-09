@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { join, basename } from 'node:path'
 import { powerMonitor, powerSaveBlocker } from 'electron'
 import log from 'electron-log/main'
-import type { SessionMeta, RecordingState, TrackMeta } from '@shared/types'
+import type { SessionMeta, RecordingState, TrackMeta, MutedRange } from '@shared/types'
 import type { StartRecordingOptions, StartRecordingResult } from '@shared/ipc'
 import { TARGET_SAMPLE_RATE, type AudioCapture, type CaptureResult } from '../audio/AudioCapture'
 import { createSessionDir, writeMeta, FILES } from '../storage/vault'
@@ -76,6 +76,27 @@ export class RecordingController extends EventEmitter {
   #discardAudio = false
 
   /**
+   * Whether the microphone is muted right now.
+   *
+   * Owned here rather than in the renderer because the tray must be able to
+   * mute with no window open — the same reason recording itself lives in main.
+   * A renderer-owned flag would also be lost on reload, silently un-muting
+   * someone mid-meeting.
+   */
+  #muted = false
+
+  /**
+   * Muted stretches, as [startMs, endMs] from the session start, plus the
+   * open one if we are muted right now.
+   *
+   * Kept so the transcript can say "you were muted here" rather than showing
+   * an unexplained silence, which otherwise looks like a capture failure —
+   * the one thing this app must never be ambiguous about.
+   */
+  #mutedRanges: MutedRange[] = []
+  #mutedSince: number | null = null
+
+  /**
    * Held while recording so macOS does not suspend the app. Explicitly
    * `prevent-app-suspension`, never `prevent-display-sleep`: we have no reason
    * to keep the user's screen awake through a meeting, and doing so would be
@@ -99,6 +120,23 @@ export class RecordingController extends EventEmitter {
   }
 
   #onDead = (track: 'mic' | 'system'): void => {
+    /*
+      A muted microphone is silent on purpose.
+
+      The liveness check reads a cumulative peak, so muting from the start of a
+      recording leaves it at exactly zero and looks identical to the
+      silent-success failure it exists to catch. Reporting a dead mic to
+      someone who muted it themselves would teach them to distrust a warning
+      that is right every other time.
+
+      Filtered here rather than in the capture: mute is not a platform concept,
+      and this is the only object that knows both facts.
+    */
+    if (track === 'mic' && (this.#muted || this.#mutedRanges.length > 0)) {
+      log.info('[recording] ignoring dead-mic report — the microphone was muted')
+      return
+    }
+
     this.#deadTracks.add(track)
     log.warn(`[recording] ${track} track is silent — capture is probably not permitted`)
     this.emit('dead', track)
@@ -135,6 +173,39 @@ export class RecordingController extends EventEmitter {
     return this.#sessionId !== null
   }
 
+  isMuted(): boolean {
+    return this.#muted
+  }
+
+  /**
+   * Mute or unmute the microphone.
+   *
+   * Returns the resulting state so callers do not have to guess, and pushes
+   * immediately rather than waiting for the next 33 ms tick: mute is a direct
+   * response to a deliberate action, and the UI confirming it a frame late
+   * reads as the click not registering.
+   *
+   * Muting outside a recording is meaningless, not an error — the tray item
+   * and the shortcut both exist when nothing is being recorded.
+   */
+  setMuted(muted: boolean): boolean {
+    if (!this.isRecording() || muted === this.#muted) return this.#muted
+
+    this.#muted = muted
+
+    if (muted) {
+      this.#mutedSince = this.#elapsedMs()
+    } else if (this.#mutedSince !== null) {
+      this.#mutedRanges.push({ startMs: this.#mutedSince, endMs: this.#elapsedMs() })
+      this.#mutedSince = null
+    }
+
+    log.info('[recording] microphone', muted ? 'muted' : 'unmuted')
+    this.#push()
+    this.emit('muted', muted)
+    return this.#muted
+  }
+
   state(): RecordingState {
     return {
       active: this.isRecording(),
@@ -143,7 +214,22 @@ export class RecordingController extends EventEmitter {
       elapsedSeconds: this.#elapsedSeconds(),
       micLevel: this.#micPeak,
       systemLevel: this.#systemPeak,
+      muted: this.#muted,
     }
+  }
+
+  /**
+   * Milliseconds since the recording started, for mute range boundaries.
+   *
+   * Wall clock, matching `#elapsedSeconds` and the UI timer rather than the
+   * sample count. The two disagree only across a suspend, and a suspend
+   * already marks a discontinuity that invalidates the timeline either side —
+   * so a mute range that spans one is approximate no matter which clock is
+   * used, and this is the clock the user was watching when they pressed it.
+   */
+  #elapsedMs(): number {
+    if (!this.#startedAt) return 0
+    return Date.now() - this.#startedAt.getTime()
   }
 
   /**
@@ -265,6 +351,13 @@ export class RecordingController extends EventEmitter {
       }
     }
 
+    // Stopping while muted leaves a range still open; close it at the end of
+    // the recording so the last stretch is not lost from meta.json.
+    const mutedRanges = [...this.#mutedRanges]
+    if (this.#mutedSince !== null) {
+      mutedRanges.push({ startMs: this.#mutedSince, endMs: this.#elapsedMs() })
+    }
+
     const meta = buildMeta({
       id: sessionId,
       title: this.#title,
@@ -272,6 +365,7 @@ export class RecordingController extends EventEmitter {
       endedAt: new Date(),
       result,
       discardAudio: this.#discardAudio,
+      mutedRanges,
     })
 
     await writeMeta(dir, meta)
@@ -344,6 +438,12 @@ export class RecordingController extends EventEmitter {
     this.#startedAt = null
     this.#micPeak = 0
     this.#systemPeak = 0
+    // Mute must never outlive the recording it was set on. Leaving it true
+    // would silently record the *next* meeting with no microphone, which is
+    // the single worst bug this feature could have.
+    this.#muted = false
+    this.#mutedSince = null
+    this.#mutedRanges = []
   }
 
   /**
@@ -407,6 +507,7 @@ export function buildMeta(opts: {
   endedAt: Date
   result: CaptureResult
   discardAudio: boolean
+  mutedRanges?: MutedRange[]
 }): SessionMeta {
   const { mic, system } = opts.result
 
@@ -441,5 +542,8 @@ export function buildMeta(opts: {
     durationSeconds,
     tracks,
     ...(opts.discardAudio ? { discardAudio: true } : {}),
+    // Omitted entirely when nothing was muted, so the overwhelmingly common
+    // meta.json is unchanged and older files stay valid without migration.
+    ...(opts.mutedRanges?.length ? { mutedRanges: opts.mutedRanges } : {}),
   }
 }

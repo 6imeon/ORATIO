@@ -12,6 +12,14 @@ export const IPC = {
   RECORDING_STOP: 'recording:stop',
   RECORDING_STATE: 'recording:state',
   /**
+   * Mute or unmute Oratio's own microphone mid-recording.
+   *
+   * Deliberately a set-with-explicit-value rather than a toggle: the tray and
+   * the window can both act on it, and a toggle sent from a stale view flips
+   * the wrong way. The caller says what it wants; main resolves it.
+   */
+  RECORDING_SET_MUTED: 'recording:setMuted',
+  /**
    * A window that opened mid-recording asking whether it should run the mic.
    *
    * It cannot decide for itself: exactly one window may hold the microphone,

@@ -7,7 +7,7 @@ difficulty. §5 turns the decisions into phases P1–P5.
 
 | Ask | Verdict | Decision |
 |---|---|---|
-| **Mute** — stop recording when I mute in Teams | Reading another app's mute state is **impossible** on macOS (§1, measured). | **Build Oratio's own mute button** — P2 |
+| **Mute** — stop recording when I mute in Teams | Reading another app's mute state is **impossible** on macOS (§1, measured). | **Built Oratio's own mute** — P2 ✅ |
 | **Delete** — remove a recording from inside the app | Storage was already built; the UI and two main-process guards were not. | **Built** — P1 ✅ |
 | **Encryption** — stop someone reading the vault | ~80% already handled by the OS; the rest is a screen-lock problem (§3). | **Not building.** Logseq shipped this and removed it |
 
@@ -662,26 +662,64 @@ the UI existed to hit them, both recorded below.
 - [x] **Deleting the session being recorded right now was unguarded.** The capture pipeline holds open WAV writers into that directory, so the delete either loses the race (writers recreate the files, half a meeting survives as an orphan with no `meta.json`) or wins it (the controller writes into a removed path for the rest of the meeting). Now refused in the handler, and the sidebar hides the control on a `recording` row rather than offering one that only errors.
 - [x] **Neither delete nor discard-audio told other windows.** The acting window refreshed itself, so this was invisible with one window open and left a second window showing a dead session, or a play button for files that no longer exist. Both handlers now broadcast `SESSION_CHANGED` via a new `sessionChanged` dep.
 
-### P2 — Mute in Oratio
+### P2 — Mute in Oratio ✅
 
 Oratio's own mute, not detection of anyone else's. Works in every app, including
 ones nobody has heard of, and needs no permission.
 
-**Design decision to make first: what does a muted stretch write?** Silence
+**Design decision, settled as planned: a muted stretch writes silence.** Silence
 keeps `mic.wav` and `system.wav` sample-aligned, which the whole two-track
 timeline depends on; writing nothing shortens the mic track and desynchronises
-it. **Write silence** unless measurement says otherwise — and note the existing
-`markDiscontinuity()` mechanism ([MacAudioCapture.ts:391](../src/main/audio/MacAudioCapture.ts#L391))
-is the wrong tool here, because it announces a gap the timeline must *not* close.
+it. The existing `markDiscontinuity()` mechanism
+([MacAudioCapture.ts:391](../src/main/audio/MacAudioCapture.ts#L391)) is the
+wrong tool here — it announces a gap the timeline must *not* close, and nothing
+is in fact missing from a muted stretch.
 
-- [ ] Mute state owned by main, alongside recording state — the tray can mute with no window open, exactly as it can record
-- [ ] Mute gates PCM at `pushMicPcm`, so a muted stretch is silence of the correct length rather than an absence
-- [ ] `IPC` channel + preload bridge, following the existing recording-control shape
-- [ ] Record button area shows mute state, and shows it unambiguously while recording
-- [ ] Tray menu item with an accelerator, and a tray title/icon that differs while muted
-- [ ] Muted ranges recorded in `meta.json` — the transcript should be able to say "you were muted here" rather than showing an unexplained silence
-- [ ] Muting mid-recording does not produce a discontinuity marker or shift the merged timeline
-- [ ] Mute cannot survive into the next recording — it must reset on start, or someone will lose a meeting to it
+- [x] Mute state owned by main, alongside recording state — the tray can mute with no window open, exactly as it can record
+- [x] Mute gates PCM at `pushMicPcm`, so a muted stretch is silence of the correct length rather than an absence
+- [x] `IPC` channel + preload bridge, following the existing recording-control shape
+- [x] Record button area shows mute state, and shows it unambiguously while recording
+- [x] Tray menu item with an accelerator, and a tray title/icon that differs while muted
+- [x] Muted ranges recorded in `meta.json` — the transcript should be able to say "you were muted here" rather than showing an unexplained silence
+- [x] Muting mid-recording does not produce a discontinuity marker or shift the merged timeline
+- [x] Mute cannot survive into the next recording — it must reset on start, or someone will lose a meeting to it
+
+**The gate went one layer above where the checklist put it.** "Gates PCM at
+`pushMicPcm`" would have meant gating inside `MacAudioCapture`, which is wrong
+on two counts: mute is not a platform concept, so every future capture backend
+would have to re-implement it identically; and `pushMicPcm` *also* emits `pcm`
+for streaming transcription, so a gate downstream of it would have left Oratio
+transcribing words the user believed it had not heard — the exact failure this
+feature exists to prevent. The gate therefore sits in
+[micPort.ts](../src/main/audio/micPort.ts), the single choke point every
+platform shares, and substitutes a zero-filled buffer of the same length.
+
+**Two things found while building:**
+
+- [x] **A muted mic tripped the dead-track detector.** The liveness check reads a *cumulative* peak, so muting from the start of a recording leaves it at exactly zero — indistinguishable from the silent-success capture failure the check exists to catch. Reporting a dead microphone to someone who muted it themselves would teach them to distrust a warning that is right every other time. Filtered in `RecordingController#onDead`, which is the only object that knows both facts.
+- [x] **The level meter had the same ambiguity, visibly.** A flat "You" meter is exactly what a dead mic looks like, and that meter exists to make a dead track noticeable mid-meeting. The muted meter now reads `muted` in place of the bar, so labelling the deliberate case keeps the alarming case alarming.
+
+**Verified by test rather than by eye** (both harnesses in the session
+scratchpad, not committed — they exercise logic, not the module graph):
+
+- Sample-alignment: a 20-chunk mute inside a 50-chunk stream produces an
+  identical total sample count to an unmuted control (32 000 either way),
+  exactly 12 800 zeroed samples, zero signal surviving inside the muted
+  stretch, and zero discontinuity markers.
+- Range bookkeeping: 11/11 — ranges accumulate correctly across repeated
+  cycles, a range still open at `stop()` is closed rather than lost, repeated
+  `setMuted(true)` does not double-count, and **mute does not survive into the
+  next recording**.
+
+`RecordingController` cannot be imported outside Electron — it pulls in
+`electron` transitively through `settings.ts` — so the second harness mirrors
+the state machine rather than importing it. Worth knowing before trying to
+unit-test anything else on the recording path.
+
+**One thing deliberately not built: a mute keyboard shortcut inside the
+window.** `CommandOrControl+Shift+M` is registered globally, which covers the
+window too. A second, window-only binding would shadow it inconsistently
+depending on focus.
 
 ### P3 — Retention mode, defaulting to transcript-only
 

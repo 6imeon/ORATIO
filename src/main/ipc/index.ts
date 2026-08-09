@@ -105,6 +105,16 @@ export function registerIpc(deps: Deps): void {
   ipcMain.handle(IPC.RECORDING_STATE, () => deps.recording.state())
 
   /**
+   * Returns the resulting state rather than void, so a caller never has to
+   * assume its request took effect. Muting when nothing is being recorded is
+   * a no-op that reports `false`, not an error — the tray item and the
+   * shortcut both exist between meetings.
+   */
+  ipcMain.handle(IPC.RECORDING_SET_MUTED, (_e, muted: boolean) =>
+    deps.recording.setMuted(muted),
+  )
+
+  /**
    * Answers "should I open the mic?" for a window that appeared mid-recording.
    *
    * False means another window already has it, and this one must stay quiet —

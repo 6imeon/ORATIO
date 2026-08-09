@@ -103,6 +103,16 @@ const api = {
      */
     state: (): Promise<RecordingState> => ipcRenderer.invoke(IPC.RECORDING_STATE),
     /**
+     * Mute Oratio's own microphone. Resolves to the resulting state.
+     *
+     * This is not a reading of, or a control over, Teams or Zoom — another
+     * app's mute state cannot be observed on macOS at all. Muting here writes
+     * silence into the mic track and stops it reaching transcription; the
+     * meeting itself still hears you.
+     */
+    setMuted: (muted: boolean): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.RECORDING_SET_MUTED, muted),
+    /**
      * Ask main whether this window should run the mic — for a window opened
      * mid-recording, which missed the MIC_START push. False means another
      * window already holds it.

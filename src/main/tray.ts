@@ -55,6 +55,15 @@ const RECENT_COUNT = 5
  */
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+R'
 
+/**
+ * Mute from anywhere, for the same reason as above — more so, in fact.
+ *
+ * Mute is the one control here with a deadline: by the time you have found a
+ * window, the thing you did not want recorded has been recorded. It has to
+ * work from inside whatever app is in front, which means a global shortcut.
+ */
+const MUTE_SHORTCUT = 'CommandOrControl+Shift+M'
+
 let tray: Tray | null = null
 let ticker: NodeJS.Timeout | null = null
 let startedAt: number | null = null
@@ -226,6 +235,23 @@ function menuTemplate(
     },
   ]
 
+  /*
+    Only while recording — muting nothing is a no-op, and an enabled control
+    that does nothing is worse than an absent one.
+
+    Says "Mute microphone", not "Mute": this does not mute the meeting. The
+    other participants still hear you; what stops is Oratio's recording of
+    your voice. Conflating the two would be the most dangerous possible
+    misunderstanding of this feature, in both directions.
+  */
+  if (isRecording) {
+    items.push({
+      label: d.recording.isMuted() ? 'Unmute microphone' : 'Mute microphone',
+      accelerator: MUTE_SHORTCUT,
+      click: () => toggleMute(),
+    })
+  }
+
   // Above Recent and below the toggle: this is a prompt about right now, and
   // it sits next to the action it is proposing.
   if (suggestion && !isRecording) {
@@ -306,14 +332,36 @@ function clock(iso: string): string {
 }
 
 function tooltip(state: TrayState): string {
-  if (state === 'recording') return `Oratio — recording ${elapsed()}`
+  if (state === 'recording') {
+    return isMuted()
+      ? `Oratio — recording ${elapsed()}, microphone muted`
+      : `Oratio — recording ${elapsed()}`
+  }
   if (state === 'transcribing') return 'Oratio — transcribing'
   return 'Oratio'
 }
 
-/** The menu-bar title: the elapsed counter while recording, nothing otherwise. */
+/**
+ * The menu-bar title: the elapsed counter while recording, nothing otherwise.
+ *
+ * A muted recording says so in words, because the menu bar is the only
+ * surface visible with no window open and mute is exactly the state someone
+ * needs to check at a glance — both to confirm it took, and to notice they
+ * left it on. The counter keeps running beside it: the meeting is still being
+ * recorded, and only the mic track is silent.
+ *
+ * Spelled out rather than drawn as a slashed-microphone glyph, which needs a
+ * combining character the menu-bar font renders inconsistently — and an
+ * ambiguous mute indicator is no better than none.
+ */
 function title(): string {
-  return startedAt !== null ? ` ${elapsed()}` : ''
+  if (startedAt === null) return ''
+  return isMuted() ? ` Muted ${elapsed()}` : ` ${elapsed()}`
+}
+
+/** Mute, read defensively — the tray outlives any single recording. */
+function isMuted(): boolean {
+  return deps?.recording.isMuted() ?? false
 }
 
 /**
@@ -336,7 +384,22 @@ async function toggle(): Promise<void> {
 }
 
 /**
- * The global shortcut, which may legitimately fail.
+ * Flip the microphone.
+ *
+ * A toggle here, unlike the IPC channel, because there is no stale view to
+ * read from: the controller is consulted at the moment of the click. Redraws
+ * immediately so the menu bar shows the new state without waiting for the
+ * next tick — the whole point of this control is that it is believed at a
+ * glance.
+ */
+function toggleMute(): void {
+  if (!deps || !deps.recording.isRecording()) return
+  deps.recording.setMuted(!deps.recording.isMuted())
+  void rebuild()
+}
+
+/**
+ * The global shortcuts, which may legitimately fail.
  *
  * `register` returns false when another app already owns the combination —
  * that is not an error we can fix, and it must not take the app down. The tray
@@ -347,6 +410,14 @@ function registerShortcut(): void {
     const ok = globalShortcut.register(TOGGLE_SHORTCUT, () => void toggle())
     if (!ok) {
       log.warn('[tray] global shortcut is taken by another app', { shortcut: TOGGLE_SHORTCUT })
+    }
+
+    // Registered separately so losing one does not cost the other — mute is
+    // the more time-critical of the two, and Cmd+Shift+M is a popular
+    // combination.
+    const muteOk = globalShortcut.register(MUTE_SHORTCUT, () => toggleMute())
+    if (!muteOk) {
+      log.warn('[tray] mute shortcut is taken by another app', { shortcut: MUTE_SHORTCUT })
     }
   } catch (err) {
     log.warn('[tray] could not register global shortcut', err)
