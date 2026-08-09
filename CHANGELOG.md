@@ -5,11 +5,9 @@ All notable changes to Oratio are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Nothing has been released yet. Everything below is under `Unreleased` until
-the first build ships — see [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)
-for what has to land first.
+## [0.1.0] - 2026-08-09
 
-## [Unreleased]
+First tagged build. Apple Silicon only, unsigned — see **Known gaps**.
 
 ### Changed
 
@@ -840,8 +838,6 @@ for what has to land first.
 
 Not defects so much as work not yet done — the honest state of the build:
 
-- `AI_SUMMARIZE` is declared but unhandled — summarisation is written and
-  typechecked but not yet wired to anything.
 - Recording is verified against short sessions. **Multi-hour meetings are
   untested**, as is the memory behaviour across a long queue. The
   device-rate-change rebuild path has been exercised only through its watcher,
@@ -856,8 +852,10 @@ Not defects so much as work not yet done — the honest state of the build:
 - The ASR worker is verified against three model families but only ever on
   short clips. Multi-hour audio, and the memory behaviour across a long
   queue, are untested.
-- No UI for the model picker — downloading currently works only through IPC.
-- The summarisation path is written and typechecked but has never been run
-  against a real transcript.
+- **The build is unsigned and not notarized.** macOS reports a downloaded
+  release as "damaged" rather than as unsigned, so first launch needs
+  right-click → Open. Fixing this properly needs an Apple Developer ID.
+- Only Apple Silicon is built. There is no Intel or Universal binary.
+- Windows is researched but not implemented — see [docs/WINDOWS.md](docs/WINDOWS.md).
 
-[Unreleased]: https://github.com/6imeon/ORATIO/commits/main
+[0.1.0]: https://github.com/6imeon/ORATIO/releases/tag/v0.1.0
