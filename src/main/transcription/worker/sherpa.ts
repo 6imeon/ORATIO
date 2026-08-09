@@ -1,4 +1,5 @@
 import { SHERPA_EXTERNAL_BUFFER, type RawSegment } from '../TranscriptionEngine'
+import { detectSpeechByEnergy } from '../energyVad'
 import { DEFAULT_VAD_OPTIONS } from '../vad'
 import type { ModelId } from '@shared/types'
 
@@ -135,12 +136,45 @@ export class SherpaSession {
   private vadModelPath: string | null = null
   private vadEnabled = true
 
+  /**
+   * Whether onnxruntime can run here at all. False routes VAD to the energy
+   * detector; ASR itself has no fallback (see `load`).
+   */
+  private onnxUsable = true
+
   load(
     modelId: ModelId,
     files: Record<string, string>,
     vadModelPath: string,
     vadEnabled: boolean,
+    onnxUsable = true,
   ): void {
+    this.onnxUsable = onnxUsable
+
+    /*
+     * There is no fallback for ASR, only for VAD.
+     *
+     * Constructing the recognizer initialises an onnxruntime thread pool, which
+     * executes AVX2 before any of our code regains control — on a CPU without
+     * it the process dies with STATUS_ILLEGAL_INSTRUCTION and no catch block
+     * ever runs. So this must return a *reportable error* before touching
+     * sherpa, rather than letting the worker vanish and leaving the queue
+     * holding a job whose failure has no explanation.
+     *
+     * Transcription is local-only by invariant, so a cloud path is not an
+     * option here — this machine genuinely cannot transcribe, and saying so is
+     * the honest outcome. Recording still works: the audio is kept and stays
+     * transcribable on another machine, which is why this is a per-job error
+     * and not a startup refusal.
+     */
+    if (!onnxUsable) {
+      throw new Error(
+        'This computer cannot run local transcription: its processor lacks AVX2, ' +
+          'which the speech-recognition engine requires. Recordings are still saved ' +
+          'and can be transcribed on another computer.',
+      )
+    }
+
     this.recognizer = new sherpa.OfflineRecognizer({
       modelConfig: modelConfig(modelId, files),
     }) as Recognizer
@@ -219,6 +253,19 @@ export class SherpaSession {
     samples: Float32Array,
   ): Array<{ startSample: number; samples: Float32Array }> {
     if (!this.vadModelPath) throw new Error('VAD model path not set')
+
+    /*
+     * On a machine that cannot run onnxruntime, Silero is not an option: it is
+     * an ONNX session, so constructing it kills this process outright rather
+     * than throwing (cpuFeatures.ts). Degrade to the energy detector instead.
+     *
+     * Never to *no* VAD — VAD-before-ASR is an invariant, and handing a whole
+     * track to a Whisper-family model fills the transcript with hallucinated
+     * text on every silent stretch.
+     */
+    if (!this.onnxUsable) {
+      return detectSpeechByEnergy(samples, SAMPLE_RATE)
+    }
 
     const vad = new sherpa.Vad(
       {

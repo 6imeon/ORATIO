@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import log from 'electron-log/main'
 import type { ModelId } from '@shared/types'
+import { detectCpuFeatures } from './cpuFeatures'
 import type { TranscriptionEngine, RawSegment } from './TranscriptionEngine'
 import type { WorkerRequest, WorkerResponse } from './worker/protocol'
 
@@ -66,6 +67,16 @@ export class WorkerEngine implements TranscriptionEngine {
   }
 
   async prepare(): Promise<void> {
+    /*
+     * Probed in main, before the worker is asked to load anything.
+     *
+     * onnxruntime executes AVX2 during thread-pool init, so a worker on an
+     * unsupported CPU dies with STATUS_ILLEGAL_INSTRUCTION instead of throwing
+     * — there would be nothing to catch and nothing to report. Deciding here
+     * means the failure arrives as a message the user can read.
+     */
+    const cpu = detectCpuFeatures()
+
     await this.#spawn()
     await this.#request({
       type: 'load',
@@ -74,6 +85,7 @@ export class WorkerEngine implements TranscriptionEngine {
       files: this.files,
       vadModelPath: this.vadModelPath,
       vadEnabled: this.vadEnabled,
+      onnxUsable: cpu.canRunOnnx,
     })
     log.info('[asr] model loaded', this.modelId)
   }

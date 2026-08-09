@@ -23,6 +23,15 @@ export interface LoadRequest {
   vadModelPath: string
   /** When false, audio goes straight to ASR. Off is a footgun; see vad.ts. */
   vadEnabled: boolean
+  /**
+   * Whether onnxruntime can run on this CPU.
+   *
+   * Decided in main and passed in rather than probed here, for two reasons:
+   * the probe shells out and would repeat on every job, and the answer is
+   * needed *before* the worker touches sherpa — a worker that detects this too
+   * late has already crashed. See cpuFeatures.ts.
+   */
+  onnxUsable: boolean
 }
 
 export interface TranscribeRequest {

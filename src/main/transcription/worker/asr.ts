@@ -27,7 +27,7 @@ function handle(req: WorkerRequest): void {
   try {
     switch (req.type) {
       case 'load':
-        session.load(req.modelId, req.files, req.vadModelPath, req.vadEnabled)
+        session.load(req.modelId, req.files, req.vadModelPath, req.vadEnabled, req.onnxUsable)
         send({ type: 'ok', id: req.id })
         break
 

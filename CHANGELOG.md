@@ -13,6 +13,23 @@ for what has to land first.
 
 ### Added
 
+- **Transcription explains itself on very old or virtualised computers instead
+  of failing.** The speech-recognition engine requires an AVX2-capable
+  processor. On machines without one — pre-2013 CPUs, and more commonly virtual
+  machines where AVX2 is switched off by the host — it did not report an error;
+  the transcription process died outright, leaving a recording stuck with no
+  explanation.
+
+  Oratio now checks before starting and says plainly that this computer cannot
+  transcribe locally. **Recording still works and your audio is still saved**,
+  so those files transcribe normally when opened on another computer. Since
+  transcription is always local, there is no cloud fallback to offer, and
+  claiming otherwise would be worse than saying so.
+
+  Speech detection, which also used the affected engine, falls back to a simpler
+  loudness-based method rather than being skipped. Skipping it would let the
+  transcript fill with text invented during silence.
+
 - **Oratio notices when a meeting starts.** When Zoom, Teams, Slack, FaceTime or
   a browser opens the microphone, the menu bar offers to record it — a
   notification and a "Record this meeting" item in the tray menu. "Not now"

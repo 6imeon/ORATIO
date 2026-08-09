@@ -340,12 +340,15 @@ Three findings the plan did not anticipate, all worth keeping:
 
 ## Phase W2 — The loopback helper
 
+**Partially done.** The AVX2 pre-flight is complete and verified; everything
+else needs a Windows machine and is blocked (see *W2 status* below).
+
 - [ ] C++ helper from the ApplicationLoopback sample; PCM to stdout, framed as AudioTee's output is
 - [ ] Default to `EXCLUDE_TARGET_PROCESS_TREE` on our own PID (§3)
 - [ ] **Test the idle-silence question first** (§7) — it determines the buffer loop
 - [ ] Synthesize silence so the system track stays aligned with the mic track
 - [ ] Detect build 20348 at runtime; fall back to classic loopback with a **visible** quality caveat
-- [ ] **Pre-flight AVX2 detection with an energy-based VAD fallback** (§7) — without it, recording start crashes outright on pre-Haswell and AVX2-masked machines
+- [x] **Pre-flight AVX2 detection with an energy-based VAD fallback** (§7) — `src/main/transcription/cpuFeatures.ts` and `energyVad.ts`
 - [ ] Add to `asarUnpack`; resolve via `app.getAppPath() + '.unpacked'`, guard with `statSync(dir).isDirectory()`
 - [ ] Attach a permanent `error` listener at spawn — an unhandled `error` event kills main (phases 11 and 12 both hit this)
 
@@ -357,7 +360,54 @@ Three findings the plan did not anticipate, all worth keeping:
 - [ ] Helper dies with its parent; no orphan after quit or crash
 - [ ] Correct and executable from inside a packaged app, not just in dev
 - [ ] Behaviour on a sub-20348 machine is the labelled fallback, not a failure
-- [ ] Recording starts on a machine without AVX2 — test with AVX2 masked in a VM, not by assuming
+- [ ] Recording starts on a machine without AVX2 — **still needs a VM with AVX2 masked.** The decision logic and the fallback detector are verified (below); what is unverified is onnxruntime's actual behaviour on such a CPU, which cannot be faked.
+
+### W2 status — what is blocked and why
+
+Everything except the AVX2 item needs a Windows machine. The plan's own
+ordering makes that explicit: *"test the idle-silence question first — it
+determines the buffer loop"*, and §7 records that no authoritative
+documentation answers it. Writing the helper before that answer means guessing
+at the loop that governs two-track alignment, and none of the seven
+verification boxes could be ticked. Left unwritten deliberately.
+
+The AVX2 pre-flight was taken out of order because it is the one W2 item that
+is **not Windows-specific**: it is CPU feature detection plus a pure-arithmetic
+VAD, both of which run and were tested on macOS.
+
+**One thing the plan got wrong.** It describes the fallback as protecting
+*recording start*. It does not — capture involves no ONNX at all. The ONNX
+sessions are the VAD and the recognizer, both of which live in the ASR worker,
+so the crash is at **transcription** time. That difference matters: recording
+survives on an AVX2-less machine and the audio is kept, which is why `load()`
+raises a readable error rather than refusing at startup.
+
+**What the fallback can and cannot do.** VAD degrades to energy detection, so
+the VAD-before-ASR invariant holds. ASR itself has no fallback — it is
+onnxruntime, and transcription-is-local forbids a cloud path — so on such a
+machine the honest outcome is a clear message plus a preserved recording that
+transcribes fine elsewhere.
+
+**Verified on macOS** (`arm64` returns early, so the x64 probe path was
+exercised separately):
+
+- 11/11 behavioural tests on the energy VAD, run against the compiled source.
+  Two of them cover failure modes that would otherwise be silent: a digitally
+  silent track must yield **no** regions (the relative threshold would
+  otherwise return the whole track as speech), and speech still open at
+  end-of-track must be kept (the `flush()` trap on the sherpa path).
+- Probe decision logic: `arm64` → usable, `ia32` → not, a **throwing probe
+  degrades to the fallback rather than assuming AVX2**, and the regex correctly
+  reads a real Haswell `leaf7_features` string without false-positives.
+- The real module executes, logs once, and caches — detection is lazy, so it
+  costs nothing at startup and shells out at most once per run.
+- `pnpm typecheck` clean; app boots and reconciles normally.
+
+The Windows probe uses `IsProcessorFeaturePresent(40)`
+(`PF_AVX2_INSTRUCTIONS_AVAILABLE`) rather than a registry CPU-name lookup,
+specifically because a hypervisor can mask AVX2 off a CPU that physically has
+it — and that masked case is the more common one in the field. That call has
+**not** been executed on Windows yet.
 
 ---
 
