@@ -1138,7 +1138,7 @@ Not in v1, and each has a reason:
 - **Templates** (Grain/Granola-style, section = a prompt) — our five sections are fixed for now.
 - **Diarization within the `them` track** — the two-track split already solves the common case.
 - **Per-app capture as a fix for speaker bleed** — it is not one, and the two problems look similar enough to be worth writing down. A tap runs inside the HAL, upstream of the DAC, so it has no influence on what physically reaches the microphone. Per-app capture fixes *digital* bleed (Spotify landing in the "them" track), which is a routing problem; *acoustic* bleed — their voice out of your speakers and back into your mic — is unaffected no matter how few processes are tapped. That is what `bleed.ts` is for.
-- **Windows** — everything platform-specific is behind `AudioCapture`. WASAPI process loopback is *better* than macOS (single-process capture), and sherpa ships Windows binaries. Remember the AVX2 pre-flight check (ARCHITECTURE §4.6).
+- **Windows** — everything platform-specific is behind `AudioCapture`. WASAPI process loopback is *better* than macOS (single-process capture), and sherpa ships Windows binaries. Remember the AVX2 pre-flight check (ARCHITECTURE §4.6). Researched and phased in [WINDOWS.md](WINDOWS.md) — note that process loopback needs build 20348 (not the widely-cited 2004), and that Chromium's default AEC will silently wreck the two-track split unless disabled explicitly.
 
 ---
 
