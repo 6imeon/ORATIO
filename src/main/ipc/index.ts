@@ -290,11 +290,18 @@ export function registerIpc(deps: Deps): void {
 
       // Null rather than a URL when the audio is gone — a session recorded
       // with "don't keep audio" has a transcript but no WAVs, and handing the
-      // renderer a file:// URL to a deleted file produces a silent, broken
-      // <audio> element instead of an explanation.
+      // renderer a URL to a deleted file produces a silent, broken <audio>
+      // element instead of an explanation.
       if (!existsSync(path)) return null
 
-      return `file://${path}`
+      /*
+       * Deliberately NOT `file://`. Chromium blocks file:// subresources in the
+       * dev renderer, which is served over http — playback failed silently in
+       * dev and worked when packaged. The custom scheme behaves identically in
+       * both; it is registered in `index.ts`, which also rebuilds the path from
+       * the vault root so a crafted URL cannot escape it.
+       */
+      return `oratio-audio://${encodeURIComponent(sessionId)}/${file}`
     },
   )
 

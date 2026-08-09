@@ -273,12 +273,88 @@ lines).
       (−27 dB vs −51 dB for the same bleed), erring toward keeping mic segments
 - [x] `pnpm typecheck` and `pnpm build` clean
 
-**Still to confirm on hardware** — the fixtures cover the real no-bleed case and
-simulated bleed, but not a real acoustic one:
+**Confirmed on hardware 9 Aug 2026** — session `2026.08.09-1753`, speakers with
+a video playing and the user speaking over it. Real acoustic bleed, which no
+fixture could produce.
 
-- [ ] A genuine speakers-only recording still has its bleed removed
-- [ ] Report B reproduction end-to-end: speakers + far-end audio + near-end
-      speech → near-end speech survives into the transcript
+- [x] Report B reproduction end-to-end: near-end speech **survives**. The gate
+      read **−19.2 dB** (20% of the track measurable) — "near-end speaker
+      present", nothing removed, and the user's `"Okay."` is in the transcript.
+- [x] The threshold is well placed against real hardware, not just fixtures.
+      Real bleed *with* a speaker present sits ~16 dB above −35 dB; simulated
+      bleed *without* one sat 10–17 dB below it. Both sides clear it by roughly
+      the margin the fixtures predicted.
+- [x] Far-end content is **retained** on the mic track, as designed: the 16.7 s
+      `me` segment is largely the far end's words, mangled (`"my amazing beach
+      naturally"` for `"my hair is being bleached naturally"`).
+
+**But the resulting transcript is still bad, and calling that "working as
+designed" would be too generous.** A1 traded a destructive failure for a visible
+one; it did not produce a good transcript in this configuration. The cause is
+the capture device rather than the detector — see *The built-in mic is the hard
+case* below, where the same setup recorded on a headset transcribes correctly.
+
+The remaining untested case is a genuine speakers-only recording with **no**
+near-end speaker at all, where bleed should be removed. Only simulated bleed
+covers that today; it needs a recording where the user says nothing.
+
+### The built-in mic is the hard case — measured 9 Aug 2026
+
+Two recordings, same room, same video, same speech, differing only in capture
+device. Sessions `2026.08.09-1753` (built-in mic + speakers) and
+`2026.08.09-1803` (headset). This is the single most useful measurement in this
+document and was expensive to obtain, so the numbers are kept verbatim.
+
+| mic frame level | floor (p10) | **median** | speech (p90) | peak (p99) |
+|---|---|---|---|---|
+| built-in + speakers | −65.6 dB | **−45.7 dB** | −37.5 dB | −31.2 dB |
+| headset | −78.6 dB | **−74.9 dB** | −45.9 dB | −40.4 dB |
+
+**The discriminator is the median, not the speech level.** Two things follow,
+and both contradict the obvious reading:
+
+1. **Near-end speech is 8 dB QUIETER on the headset** (−45.9 vs −37.5). The
+   problem was never that the built-in mic captures the user too faintly.
+2. **The headset's median sits 3.7 dB above its own noise floor; the built-in
+   mic's sits 28 dB above.** A headset mic is *silent between utterances*. A
+   built-in mic is never silent — it captures the room, and the room contains
+   the far end coming out of the speakers.
+
+That continuous fill is the actual defect. It leaves VAD no gaps to segment on
+and gives ASR no clean stretch of near-end speech to decode, so the mic track
+transcribes as a garbled blend of both sources — measured, `"my amazing beach
+naturally"` for the far end's `"my hair is being bleached naturally"`. The
+headset recording of the same setup transcribes correctly, with five distinct
+`me` segments interleaved in the right places.
+
+**Envelope correlation does not identify it either.** Mic-vs-system envelope
+correlation on the built-in recording is near zero throughout (−0.55 to +0.41,
+mostly < 0.3) — not the strong positive a "mic is mostly bleed" model predicts.
+Both sources are present at comparable level and neither dominates the envelope.
+This is a direct warning for A2 below: the contaminating signal is not a clean
+scaled copy of the reference, because it arrives through a room and competes
+with the near-end speaker rather than sitting underneath them.
+
+**Why the physics is unfavourable.** The laptop speakers are closer to the
+built-in mic than the user's mouth is, and reach it by a short direct path,
+while the user's voice arrives off-axis with reflections. The far end is
+therefore not a faint echo beneath the near-end speaker — it is a comparable,
+*cleaner* signal. Built-in mic plus speakers is close to the worst case for a
+two-track architecture, because the physical separation the design relies on is
+largely absent.
+
+**Consequences, unresolved.** This is a device-configuration limit rather than a
+bug in the attribution code — A1's gate read the situation correctly (−19.2 dB,
+"near-end speaker present") and kept the user's speech, which was right. But the
+resulting transcript is still bad, and this is the *common* configuration: most
+users will not wear a headset. Options, none yet chosen:
+
+- Detect it (a mic whose median sits far above its own floor while system audio
+  is playing) and say so in the UI, rather than silently producing a blended
+  transcript.
+- Treat it as the real target for A2, accepting that Pfau's correlation rule is
+  a poor fit for the reason measured above.
+- Accept the limit and document it, as Granola effectively does.
 
 ### Phase A2 — correlation for the case the gate cannot decide
 
@@ -369,6 +445,26 @@ smallest value that reorders.
 - [x] Degenerate inputs safe: empty, digitally silent, constant tone (correctly
       not speech), and 45 s of pauseless speech-like audio still terminates
 - [x] `pnpm typecheck` and `pnpm build` clean
+
+**Confirmed on hardware 9 Aug 2026** — session `2026.08.09-1753`, an unrelated
+recording made for A1. The far-end track split 1 → 3 regions, and the user's
+`"Okay."` sorted **between** two of them; under the old 30 s cap the far end was
+a single ~18 s block and it could only have sorted after all of it.
+
+That recording also shows the "target, not a ceiling" property in the wild: the
+*mic* track split only once, at 16.9 s, because the user spoke almost
+continuously and the audio offers exactly one point where speech probability
+dips. The cap chooses among the pauses that exist; it cannot invent one. Forcing
+a cut there would slice mid-word, with no padding on the sherpa path to soften
+it — so this is the intended trade, not a shortfall.
+
+**Where A3 does nothing, and why that is expected.** On the headset recording
+(`2026.08.09-1803`) the cap barely mattered: far-end regions at 30 s and 7 s are
+near-identical (only the first shrank, 8.6 → 8.1 s), because that mic produced
+five short naturally-separated regions and the interleaving came from the audio's
+own pauses. A3 only earns its keep when one side talks continuously — which is
+exactly the report A scenario, and why the 1753 recording is the one that
+validates it.
 
 **Not fixed by this.** Genuinely simultaneous speech still cannot be expressed by
 a flat start-time sort; this makes the ordering unit fine enough that

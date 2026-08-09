@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, nativeTheme } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, nativeTheme, net, protocol } from 'electron'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
@@ -368,9 +368,50 @@ function navigate(target: NavTarget): void {
   }
 }
 
+/**
+ * Custom scheme for session audio. MUST be registered before `whenReady`.
+ *
+ * A plain `file://` URL cannot be used, and the reason is a build-dependent
+ * trap of exactly the kind CLAUDE.md already lists twice. In dev the renderer is
+ * served over `http://localhost:5173`, and Chromium refuses to load `file://`
+ * subresources into an http document — so `<audio>` stayed silent with no error
+ * anywhere. In a packaged build the page is itself loaded with `loadFile`, so
+ * the origin IS `file://`, the same URL loads fine, and the bug is invisible.
+ * Playback therefore worked when packaged and failed in dev, which is the worst
+ * way round: it breaks on a build change rather than a code change.
+ *
+ * `stream: true` is what makes an <audio> element seekable — without it Chromium
+ * cannot issue range requests, so clicking a transcript line to jump mid-file
+ * would not work, which is the entire point of keeping the audio.
+ */
+const AUDIO_SCHEME = 'oratio-audio'
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: AUDIO_SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } },
+])
+
 void app.whenReady().then(async () => {
   const settings = await loadSettings()
   await mkdir(settings.vaultPath, { recursive: true })
+
+  /**
+   * Serve session audio, and ONLY session audio.
+   *
+   * The path is rebuilt from the vault root and a session id rather than taken
+   * from the URL, so a crafted URL cannot walk out of the vault and read
+   * arbitrary files — the renderer is untrusted by construction here.
+   */
+  protocol.handle(AUDIO_SCHEME, async (request) => {
+    const { hostname, pathname } = new URL(request.url)
+    const track = pathname.replace(/^\//, '')
+    if (track !== 'mic.wav' && track !== 'system.wav') {
+      return new Response('not found', { status: 404 })
+    }
+
+    const current = await loadSettings()
+    const file = join(sessionDir(current.vaultPath, hostname), track)
+    return net.fetch(`file://${file}`)
+  })
 
   // Before the first window exists. `vibrancy` is sampled when the window is
   // created, so a saved Light theme applied after that point would leave the
