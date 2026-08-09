@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
+import { join, dirname, isAbsolute } from 'node:path'
 import { app, safeStorage } from 'electron'
 import log from 'electron-log/main'
 import type { ProviderConfig, ProviderId, Settings } from '@shared/types'
@@ -103,8 +103,17 @@ export async function loadSettings(): Promise<Settings> {
   // Escape hatch for verification harnesses and the phase 10 soak test, which
   // must never write into the user's real vault. Env-only and deliberately
   // undocumented in the UI — it is a testing affordance, not a feature.
+  //
+  // Must be absolute. `join()` resolves a relative path against cwd, which in
+  // dev is the repo root — a harness that set `ORATIO_VAULT=test` scattered
+  // session folders through the working tree, and they looked enough like real
+  // recordings to be worth double-checking before deletion. Reject rather than
+  // resolve: a relative value here is always a mistake in the caller.
   const override = process.env['ORATIO_VAULT']
-  if (override) settings = { ...settings, vaultPath: override }
+  if (override) {
+    if (isAbsolute(override)) settings = { ...settings, vaultPath: override }
+    else log.warn('[settings] ignoring relative ORATIO_VAULT', { override })
+  }
 
   return settings
 }

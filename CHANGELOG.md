@@ -232,6 +232,14 @@ for what has to land first.
 
 ### Fixed
 
+- **A relative `ORATIO_VAULT` scattered session folders through the working
+  tree.** The test-only vault override was passed to `join()` unchecked, so a
+  relative value resolved against the current directory — which in `pnpm dev` is
+  the repo root. Four empty session folders had accumulated there, and because
+  they carried real session names and real `.wav` files they were indistinguishable
+  from genuine recordings on sight. The override now requires an absolute path
+  and logs a warning otherwise, rather than resolving somewhere surprising.
+
 - **Starting a recording from the menu bar captured only the other side.** The
   microphone lives in a window — `getUserMedia` is the only mic API Electron
   offers — so a meeting started from the tray with nothing open recorded system
