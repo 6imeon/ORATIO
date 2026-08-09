@@ -1,5 +1,6 @@
-import { ipcMain, dialog, shell, systemPreferences, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, shell, systemPreferences, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import log from 'electron-log/main'
 import {
@@ -30,6 +31,7 @@ import {
   sessionDir,
 } from '../storage/vault'
 import { parseNotes, renderNotesDoc } from '../storage/notesDoc'
+import { readCaptureHealth, inferTrackAccess } from '../storage/captureHealth'
 import { resolveProvider, runSummarize } from '../ai/Summarizer'
 import { loadSettings, saveSettings, setApiKey, hasApiKey } from '../storage/settings'
 
@@ -239,6 +241,21 @@ export function registerIpc(deps: Deps): void {
   ipcMain.handle(IPC.SETTINGS_SET, async (_e, patch: Partial<Settings>) => {
     const next = { ...(await loadSettings()), ...patch }
     await saveSettings(next)
+
+    /**
+     * `launchAtLogin` is the one setting that lives outside our own file.
+     *
+     * Storing the boolean is not the feature — macOS keeps the real login-item
+     * registration, and until now nothing told it. Applied on every write
+     * rather than only on change, because the OS is the source of truth and
+     * they can drift: a user who removes Oratio from Login Items in System
+     * Settings leaves our JSON saying `true`, and a comparison against the
+     * stored value would then skip the fix forever.
+     */
+    if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: next.launchAtLogin })
+    }
+
     return next
   })
 
@@ -253,6 +270,46 @@ export function registerIpc(deps: Deps): void {
     const next = { ...(await loadSettings()), vaultPath: res.filePaths[0] }
     await saveSettings(next)
     return next.vaultPath
+  })
+
+  /**
+   * "Reveal in Finder", for the vault root.
+   *
+   * Creates the directory first if it is missing. That is not defensive
+   * tidiness — the vault is created lazily by the first recording, so on a
+   * fresh install this button would otherwise point at a path that does not
+   * exist yet, and `showItemInFolder` on a missing path fails silently. A
+   * button that does nothing when pressed is the anarlog complaint verbatim
+   * (UI.md §7), so the folder is made real rather than the failure explained.
+   *
+   * `openPath` on the directory itself, not `showItemInFolder` — we want the
+   * folder opened and its contents shown, not the folder selected inside its
+   * parent.
+   */
+  ipcMain.handle(IPC.SETTINGS_REVEAL_VAULT, async () => {
+    const { vaultPath } = await loadSettings()
+    await mkdir(vaultPath, { recursive: true })
+
+    // Resolves with an error STRING rather than rejecting — an empty string
+    // means success. Surfaced as a real rejection so the UI can say something.
+    const err = await shell.openPath(vaultPath)
+    if (err) throw new Error(`Could not open ${vaultPath}: ${err}`)
+  })
+
+  /**
+   * Deep links only: `x-apple.systempreferences:` panes and https URLs.
+   *
+   * Allow-listed by scheme because this is a renderer-reachable channel that
+   * hands a string to the OS handler. `file:` is deliberately excluded — the
+   * renderer has no filesystem reach anywhere else in this bridge, and this
+   * must not become the exception that gives it one.
+   */
+  ipcMain.handle(IPC.SETTINGS_OPEN_EXTERNAL, async (_e, url: string) => {
+    const allowed = ['x-apple.systempreferences:', 'https:']
+    if (!allowed.some((scheme) => url.startsWith(scheme))) {
+      throw new Error(`Refusing to open ${url}`)
+    }
+    await shell.openExternal(url)
   })
 
   // -- Models --------------------------------------------------------------
@@ -483,13 +540,24 @@ export function registerIpc(deps: Deps): void {
 
   // -- Permissions ---------------------------------------------------------
 
-  ipcMain.handle(IPC.PERMISSION_CHECK, (): PermissionState => {
+  /**
+   * Mic status is queried; system-audio status is inferred.
+   *
+   * The asymmetry is macOS's, not ours. `getMediaAccessStatus` answers for the
+   * microphone directly, but there is no equivalent for a Core Audio process
+   * tap and no way to test one without starting it — so the system-audio
+   * answer comes from what the last completed recording actually captured
+   * (ARCHITECTURE §6). That evidence is written at stop() and read here, which
+   * is why this reports `likely-` rather than a definite state, and why it
+   * carries the observation date: the UI has to be able to say *when* it saw
+   * this work rather than implying it is checking now.
+   */
+  ipcMain.handle(IPC.PERMISSION_CHECK, async (): Promise<PermissionState> => {
+    const health = await readCaptureHealth()
     return {
       microphone: systemPreferences.getMediaAccessStatus('microphone'),
-      // macOS exposes no side-effect-free way to query system-audio TCC
-      // state, so this stays 'unknown' until a capture has run and we can
-      // infer it from whether the track was silent.
-      systemAudio: 'unknown',
+      systemAudio: inferTrackAccess(health?.systemPeak),
+      systemAudioObservedAt: health?.observedAt ?? null,
     }
   })
 

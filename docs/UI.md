@@ -664,13 +664,37 @@ the main window.
 | **Model** | The four models from [models.ts](src/shared/models.ts), with real sizes shown. Download / delete / progress. |
 | **Recording** | Launch at login, VAD toggle, optional floating pill. |
 | **AI** | Provider, model, API key. Must state plainly that **transcription never leaves the machine** and only summarisation uses a provider. |
-| **Permissions** | Mic status, system-audio status. `systemAudio` is inferred, not queried (ARCHITECTURE.md §3), so word it honestly — "appears to be working", not a false green tick. |
+| **Permissions** | Mic status, system-audio status. `systemAudio` is inferred, not queried (ARCHITECTURE.md §3), so word it honestly — "appears to be working", not a false green tick. **[built in phase 9]** and dated: the panel says *when* it saw capture work, because "appears to be working" is only honest if the reader can tell it describes a past recording rather than a live check. A denied state links to the right System Settings pane. |
 
 **[verified]** First-run confusion is a named Granola complaint. **[inferred]**
 First run does exactly one thing: pick a vault folder, download the default
 model with visible progress, then show the record button. Model download is the
 first thing a new user experiences and per ARCHITECTURE.md §4.4 the most likely
 thing to fail — it needs real progress, real errors, and a retry.
+
+### Where setup actually landed **[built in phase 9]**
+
+The vault question moved *out* of the gate. It cannot be missing — there is
+always a default under `~/Documents` — so it is a question, not a blocker, and
+making it a step would have turned a one-click setup into two decisions. It sits
+below the download as a path with a "Change" link.
+
+So the gate is the model alone, and it is derived from the filesystem on every
+check rather than stored as an "onboarded" flag. A flag lies precisely when it
+matters: someone who deletes their only model has completed onboarding and
+still cannot record.
+
+The setup screen **replaces** the app rather than overlaying it. An overlay
+would leave a working record button underneath, which is the failure this
+screen exists to prevent — and the same refusal is enforced in
+`RecordingController.start()`, because the tray can start a meeting with no
+window open at all. The message names the fix ("Open Settings to download one")
+and says it happens once.
+
+Past 90% the progress label changes from "downloading" to "verifying and
+unpacking". `ModelManager` reserves that last tenth for the checksum and bzip2
+extraction, which report no byte progress and take several seconds — so the bar
+stops moving exactly where the old label claimed it was still downloading.
 
 ---
 

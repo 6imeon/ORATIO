@@ -4,8 +4,10 @@ import { SessionList } from './components/SessionList'
 import { RecordButton } from './components/RecordButton'
 import { MeetingView } from './pages/MeetingView'
 import { SettingsView } from './pages/SettingsView'
+import { FirstRunView } from './pages/FirstRunView'
 import { useMicCapture } from './hooks/useMicCapture'
 import { useNavigation } from './hooks/useNavigation'
+import { useFirstRun } from './hooks/useFirstRun'
 
 export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([])
@@ -15,6 +17,8 @@ export function App(): React.JSX.Element {
   // window at a session that was recorded with nothing open.
   const nav = useNavigation()
   const selected = nav.sessionId
+
+  const firstRun = useFirstRun()
 
   // Mounted at the root, not inside the record button: main decides when to
   // record, and this window's mic must keep running whatever the UI is showing.
@@ -41,6 +45,26 @@ export function App(): React.JSX.Element {
     () => sessions.find((s) => s.id === selected) ?? null,
     [sessions, selected],
   )
+
+  /*
+   * Setup replaces the whole window rather than appearing beside it.
+   *
+   * Without a model there is nothing the main UI can usefully do: recording
+   * would succeed and transcription would fail afterwards, which is the worst
+   * possible place to discover it. `checking` renders nothing at all — it
+   * resolves in a single tick, and a flash of the empty state before the setup
+   * screen would look like a bug.
+   */
+  if (firstRun.step === 'checking') return <div className="h-screen bg-(--color-ground)" />
+  if (firstRun.step === 'model') {
+    return (
+      <FirstRunView
+        settings={firstRun.settings}
+        onReady={firstRun.recheck}
+        onSkip={firstRun.skip}
+      />
+    )
+  }
 
   return (
     <div className="flex h-screen bg-(--color-ground) text-(--color-ink)">

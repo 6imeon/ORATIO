@@ -27,7 +27,8 @@ rule is: **every phase ends in something you can run and judge.**
 | AI providers + prompt + section parser | **Wired and verified** — streaming, cancel, `num_ctx` against a fake Ollama (phase 8) |
 | `notes.md` document model | **Built and verified** — the user's notes and the AI summary are separate fields, so neither can overwrite the other (phase 8) |
 | Tray | **Built and verified** — three states, Recent, Settings, global shortcut; the icon asset was missing entirely (phase 7) |
-| Renderer | **Layout J built and verified** (phase 6); Settings is read-only until phase 9 |
+| Renderer | **Layout J built and verified** (phase 6); **Settings editable and first-run flow built** (phase 9) |
+| Permissions | **`systemAudio` genuinely inferred** — observed at stop, persisted to `capture-health.json`, read back and worded as evidence rather than status (phase 9) |
 | Mic capture | **Built and verified** — worklet → port → WAV, lossless (phase 3) |
 | Model download manager | **Built and verified against the network** (phase 1) |
 | ASR engine | **Built and verified** — 3 config families (phase 2) |
@@ -36,7 +37,10 @@ rule is: **every phase ends in something you can run and judge.**
 
 **Every request/response IPC channel now has a handler.** `AI_SUMMARIZE` was
 the last gap and phase 8 wired it, alongside three new channels it needed:
-`AI_CANCEL`, `AI_SUMMARY_GET` and `AI_SUMMARY_CLEAR`. `NAV_PENDING` was added
+`AI_CANCEL`, `AI_SUMMARY_GET` and `AI_SUMMARY_CLEAR`. Phase 9 added two more —
+`SETTINGS_REVEAL_VAULT` (distinct from `SESSION_REVEAL`, which reveals one
+meeting's `notes.md` and cannot answer for a vault that does not exist yet) and
+`SETTINGS_OPEN_EXTERNAL`, allow-listed by scheme. `NAV_PENDING` was added
 in phase 7 and is handled in
 `index.ts` rather than `registerIpc`, because it reads window state. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
 and `SESSION_GET` were the phase 4 gap and are now handled. (The `EVENTS`
@@ -702,15 +706,117 @@ anything reads it.
 
 ---
 
-## Phase 9 — Settings & first run
+## Phase 9 — Settings & first run ✅
 
 *Ends in:* a new user gets to a first transcript without help.
 
-- [ ] Settings window: Vault / Model / Recording / AI / Permissions
-- [ ] **"Reveal in Finder" must actually open Finder** — the anarlog complaint
-- [ ] Permissions worded honestly. `systemAudio` is *inferred*, not queried — no false green tick (ARCHITECTURE §6)
-- [ ] First run does one thing: pick a vault → download default model with real progress → record button
-- [ ] Model picker shows real sizes from `models.ts`
+- [x] Settings window: Vault / Model / Recording / AI / Permissions
+- [x] **"Reveal in Finder" must actually open Finder** — the anarlog complaint
+- [x] Permissions worded honestly. `systemAudio` is *inferred*, not queried — no false green tick (ARCHITECTURE §6)
+- [x] First run does one thing: pick a vault → download default model with real progress → record button
+- [x] Model picker shows real sizes from `models.ts`
+
+### What the build actually found
+
+**Three of the five items were blocked on main-process gaps, not UI.** The
+checklist reads like a settings screen; most of it could not be built until
+main could answer questions it previously could not.
+
+**`systemAudio` was not inferred — it was hardcoded.** `PERMISSION_CHECK`
+returned the literal string `'unknown'` unconditionally, so "word it honestly"
+was not achievable by wording. The evidence existed but was thrown away:
+`MacAudioCapture` fires `dead` after `LIVENESS_CHECK_MS` and
+`RecordingController` tracked peaks per track, then cleared them in `#reset()`.
+That evidence exists only at the instant a recording stops, and the settings
+panel runs on a later launch — so it is now written to
+`userData/capture-health.json` at stop and read back by the handler.
+
+Kept out of `settings.json` on purpose. Settings are the user's choices and are
+theirs to copy between machines; this is an observation about *one Mac's* TCC
+state, and a stale value copied elsewhere would be worse than none. The
+inference rule is that **exactly** zero means denied, not a small epsilon — a
+permitted tap on a quiet machine still carries a dither floor, and treating a
+tiny value as denial would send a working install to go fix its permissions. A
+corrupt or truncated file degrades to `unknown`, never to a false denial.
+
+**"Reveal in Finder" pointed at a folder that does not exist yet.** The vault
+is created lazily by the first recording, so on a fresh install the path shown
+in Settings is not on disk — and `showItemInFolder` on a missing path does
+nothing at all, silently. That is the anarlog complaint verbatim, reproduced by
+the button meant to answer it. The handler now creates the directory first and
+surfaces a Finder refusal as a real error rather than a no-op.
+
+**`launchAtLogin` was a boolean that did nothing.** It was stored and read back
+faithfully and never reached `app.setLoginItemSettings`. It is now applied on
+every write rather than only on change, because macOS owns the real
+registration and the two can drift — a user who removes Oratio from Login Items
+in System Settings leaves our JSON saying `true`, and a change-comparison would
+skip the correction forever. Guarded by `app.isPackaged`: in dev this would
+register the Electron binary itself as a login item.
+
+**Nothing stopped a new user recording with no model installed.** The recording
+path never checked. A first-run user could record a full meeting successfully
+and be told only afterwards that nothing could transcribe it — the audio is not
+lost, but the failure arrives an hour late, at the one moment it cannot be
+acted on, and looks like the product is broken. This is the Granola first-run
+complaint the phase is meant to answer. The check is now a precondition of
+`RecordingController.start()`, before a session directory exists, so a refusal
+leaves nothing behind. It lives in main rather than the renderer because the
+tray can start a meeting with no window open.
+
+**The progress label lied for the last ten percent.** `ModelManager` reserves
+0.9–1.0 for checksum verification and bzip2 extraction, which report no byte
+progress and take several seconds. The bar said "downloading" throughout —
+describing the wrong activity at exactly the point it stops moving, which is
+when a user starts wondering whether it has hung. Caught by watching a real
+download rather than by reading the code.
+
+There is deliberately **no "have we onboarded" flag**. Readiness is derived
+from the filesystem on every check, because a flag lies in the cases that
+matter: someone who deletes their only model has completed onboarding and still
+cannot record. Deriving it means setup reappears exactly when it is needed.
+
+### Verification
+
+126 checks, all passing, in four harnesses:
+
+- **20 pure-module checks** — the capture-health round trip, the inference rule
+  at its boundary (exactly zero vs `1e-7`), truncated and wrong-typed JSON
+  degrading to `unknown` rather than to a false denial, and a write to an
+  impossible path *not throwing* — a diagnostic file must never be able to fail
+  the recording that just succeeded.
+- **44 checks in a real Electron main process**, driving the actual registered
+  IPC handlers: the permission inference end to end across all four states,
+  reveal creating a missing vault and rejecting a Finder failure, the
+  `openExternal` allow-list refusing `file:`, `javascript:`, bare paths and the
+  empty string, settings merge semantics, and the key path — `hasApiKey` true
+  while the key itself appears in neither the response, `settings.json`, nor
+  `secrets.bin` in plaintext.
+- **50 checks against the real renderer**, driving the real React UI: setup
+  replacing the app rather than sitting over a usable one, the record button
+  refusing with a readable message and creating no session directory, toggles
+  persisting through IPC to disk rather than only into React state, and the
+  permissions wording asserted *negatively* — it must never render
+  `System audio — allowed` in any of the three states.
+- **12 checks against a real download** — the actual 251 MB moonshine tarball
+  served from localhost through the real `fetch`, so extraction, the pinned
+  SHA-256 and pruning all ran for real. This is what caught the progress label,
+  and it proves the two halves that a stub cannot: that the bar advances, and
+  that the app leaves setup by itself when the model lands.
+
+The download harness redirects only the release-asset host, and does it in the
+harness rather than in the product — `ModelManager` keeps its real URL and real
+pinned digest, and only the bytes come from elsewhere. A test-only branch in
+the download path would have verified something subtly different from what
+ships.
+
+Two harness bugs, both mine, both worth recording. A click at a checkbox's
+coordinates does nothing when the element is scrolled out of the viewport —
+`scrollIntoView` first, then assert the rect is actually on screen, or the
+click silently lands on whatever is there instead. And `ORATIO_VAULT` is
+applied *after* the settings merge in `loadSettings`, so a harness that patches
+`vaultPath` through `SETTINGS_SET` is silently overridden and every assertion
+after it describes the wrong directory.
 
 ---
 
@@ -722,7 +828,8 @@ anything reads it.
 - [ ] Fill the disk mid-recording; confirm the failure is *reported*
 - [ ] Measure first window open; pre-warm **only if** above 1 s (~50 MB permanent cost)
 - [ ] Verify `enableExternalBuffer` and the `@rpath` finding still hold after any sherpa upgrade
-- [ ] LICENSE file — `package.json` and README both claim MIT and there is no LICENSE
+- [x] LICENSE file — `package.json` and README both claim MIT and there is no LICENSE *(added in `6778be2`)*
+- [ ] Re-check the first-run download on a **real, slow connection** — phase 9 verified it against localhost, where the transfer finishes before the bar can show the 0–90% span that dominates a real one
 
 ---
 
@@ -760,5 +867,5 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phases 5, 6, 7 and 8 are done. Phase 9 is next, and
-phase 10 gates any release.
+without its predecessor. Phases 5, 6, 7, 8 and 9 are done. Only phase 10
+remains, and it gates any release.

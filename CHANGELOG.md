@@ -13,6 +13,33 @@ for what has to land first.
 
 ### Added
 
+- **Settings is real, and first run does one thing.** Five groups on one
+  screen — Vault, Model, Recording, Summaries, Permissions — with no tabs, no
+  sub-pages and no Save button: every control writes as you change it.
+  - **A new Mac gets a setup screen, not an empty app.** It downloads the
+    recommended model with a real percentage, a real error and a retry in
+    place, then leaves by itself when the model lands. It is skippable, and it
+    comes back if you later delete your only model — readiness is checked
+    against the disk rather than remembered as a flag.
+  - **Recording now refuses early when no model is installed**, instead of
+    recording a whole meeting and failing to transcribe it afterwards. The
+    refusal names the fix and says it only has to happen once.
+  - **The model picker shows both numbers**: the download and what it actually
+    occupies once installed. For Whisper small those differ by 278 MB, and
+    showing one of them would mislead either way. The model in use cannot be
+    deleted out from under the next recording.
+  - **"Reveal in Finder" opens Finder**, including on a fresh install where
+    the vault folder has not been created yet — which is exactly the case where
+    the button used to do nothing at all, silently.
+  - **Permissions are worded as evidence, not as status.** macOS cannot be
+    asked whether system-audio capture is permitted, so Oratio says what it
+    observed and when: "appears to be working, based on your last recording on
+    …". Never a green tick it did not earn, and a blocked state links straight
+    to the right System Settings pane.
+  - **API keys are write-only.** They go to the macOS Keychain and are never
+    read back into the window — the field shows "Saved in your Keychain"
+    rather than a masked value, because there is nothing to show.
+
 - **Meetings can be summarised, and the summary is yours to undo.** Press
   `⌘E` or the Summarise button and the model expands your notes into five
   sections — Summary, Decisions, Action items, Discussion, Open questions —
@@ -116,6 +143,23 @@ for what has to land first.
 
 ### Fixed
 
+- **System-audio status was hardcoded, not detected.** The permissions check
+  returned "unknown" unconditionally, so it could never have told you your
+  system audio was blocked. It now reports what the last completed recording
+  actually captured, persisted across launches — which is the only way to know,
+  since macOS offers no way to query it without starting a capture.
+- **"Open at login" did nothing.** The preference was saved and read back
+  faithfully and never registered with macOS. It is now applied on every write,
+  so removing Oratio from Login Items in System Settings is corrected rather
+  than silently disagreed with.
+- **A missing model failed after the meeting instead of before it.** Nothing
+  checked for an installed model before recording, so a new user could capture
+  a full meeting and only then discover nothing could transcribe it. The audio
+  survived, but the news arrived an hour too late to act on.
+- **The download progress bar said "downloading" while it was unpacking.** The
+  last tenth of the bar is checksum verification and extraction, which report
+  no byte progress — so the label described the wrong activity at exactly the
+  point the bar stops moving and you start wondering whether it has hung.
 - **Typing after generating a summary would have destroyed it.** `notes.md`
   was read and written as one opaque blob, so the notes editor's autosave —
   which fires 600 ms after every keystroke — wrote the file back without the

@@ -239,6 +239,13 @@ void app.whenReady().then(async () => {
     onSessionComplete: (dir) => queue.enqueue(dir),
     broadcastState: (state) => broadcast(EVENTS.RECORDING_STATE, state),
     requestMic: (start) => requestMic(start),
+    /*
+     * Any installed model, not specifically the active one — the same rule the
+     * setup screen uses. Someone who downloaded a different model and switched
+     * to it is ready to record, and refusing because the default is absent
+     * would block a perfectly working install.
+     */
+    hasModel: async () => (await models.list()).some((s) => s.status === 'ready'),
   })
 
   // Before any handler can query it. A search arriving at a worker that has not

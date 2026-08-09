@@ -56,6 +56,22 @@ export const IPC = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
   SETTINGS_PICK_VAULT: 'settings:pickVault',
+  /**
+   * Open the vault folder in Finder.
+   *
+   * Separate from SESSION_REVEAL, which reveals one meeting's notes.md. This
+   * one has to work before any meeting exists — the vault directory is created
+   * lazily by the first recording, so on a fresh install the path in Settings
+   * points at nothing. Revealing a non-existent folder does nothing at all,
+   * silently, which is exactly the complaint this button is here to answer.
+   */
+  SETTINGS_REVEAL_VAULT: 'settings:revealVault',
+  /**
+   * Open a macOS System Settings pane (or any https URL) in the default
+   * handler. Used by the permissions panel to take the user straight to the
+   * privacy pane rather than describing where to click.
+   */
+  SETTINGS_OPEN_EXTERNAL: 'settings:openExternal',
 
   // AI providers
   AI_PROVIDERS: 'ai:providers',
@@ -219,4 +235,15 @@ export interface PermissionState {
    * a non-silent buffer. `unknown` until a recording has been attempted.
    */
   systemAudio: 'likely-granted' | 'likely-denied' | 'unknown'
+  /**
+   * When the evidence behind `systemAudio` was gathered, or null if there is
+   * none yet.
+   *
+   * Shown to the user, and load-bearing rather than decorative: "appears to be
+   * working" is only an honest thing to say if the reader can see it describes
+   * a past recording rather than a live check. Without the date it reads as a
+   * status light, which is precisely the false green tick this is meant to
+   * avoid.
+   */
+  systemAudioObservedAt: string | null
 }

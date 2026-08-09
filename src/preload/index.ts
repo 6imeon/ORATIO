@@ -148,6 +148,14 @@ const api = {
     set: (patch: Partial<Settings>): Promise<Settings> =>
       ipcRenderer.invoke(IPC.SETTINGS_SET, patch),
     pickVault: (): Promise<string | null> => ipcRenderer.invoke(IPC.SETTINGS_PICK_VAULT),
+    /**
+     * Open the vault in Finder, creating it if the first recording has not
+     * made it yet. Rejects with a readable message if Finder refuses.
+     */
+    revealVault: (): Promise<void> => ipcRenderer.invoke(IPC.SETTINGS_REVEAL_VAULT),
+    /** System Settings panes and https links only — see the handler. */
+    openExternal: (url: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SETTINGS_OPEN_EXTERNAL, url),
   },
 
   models: {

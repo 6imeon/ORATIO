@@ -1,20 +1,45 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Settings } from '@shared/types'
+import { ModelPicker } from '../components/ModelPicker'
+import { PermissionsPanel } from '../components/PermissionsPanel'
+import { ProviderSettings } from '../components/ProviderSettings'
 
 /**
- * Settings — the read-only half.
+ * Five groups on one screen.
  *
- * Phase 9 makes these editable and adds the model picker, provider keys and
- * first-run flow. What matters now is that the tray's Settings item and ⌘,
- * lead somewhere that tells the truth: this reads the real settings file, so
- * the values shown are the values in use. A menu item that opens a panel of
- * placeholder text would be worse than one that is absent.
+ * Superwhisper's settings are described as "overwhelming" (UI.md §7), so the
+ * shape is deliberately flat — no tabs, no sub-pages, no search. Everything
+ * Oratio can be configured to do fits in one scroll.
+ *
+ * Writes go straight through. There is no Save button and no dirty state: each
+ * control calls `settings.set` with the one key it owns, and main merges it
+ * over the current file. A form that batches changes would need a discard
+ * path, and the failure mode of forgetting to press Save is worse than the
+ * cost of a write per toggle.
  */
 export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.Element {
   const [settings, setSettings] = useState<Settings | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     void window.oratio.settings.get().then(setSettings)
+  }, [])
+
+  /**
+   * Patch, then adopt what main returns rather than what was sent.
+   *
+   * Main merges the patch over the file it has, so its reply is the real state
+   * — including any key this window never knew about, and any normalisation it
+   * applied. Trusting the local optimistic value instead is how two windows
+   * open on Settings drift apart.
+   */
+  const update = useCallback(async (patch: Partial<Settings>): Promise<void> => {
+    setError(null)
+    try {
+      setSettings(await window.oratio.settings.set(patch))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }, [])
 
   return (
@@ -35,111 +60,183 @@ export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.El
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
-        <div className="mx-auto max-w-lg">
+        <div className="mx-auto flex max-w-lg flex-col gap-8">
           {settings === null ? (
             <p className="text-[13px] text-(--color-ink-dim)">Loading…</p>
           ) : (
-            <dl className="space-y-0">
-              <Row label="Vault" value={settings.vaultPath} mono />
-              <Row label="Model" value={settings.activeModel} />
-              <Row
-                label="Voice detection"
-                value={settings.vadEnabled ? 'On' : 'Off'}
-                hint="Runs before transcription. Whisper-family models hallucinate on silence, and a system tap captures a lot of it."
-              />
-              <Row
-                label="Keep audio"
-                value={settings.discardAudioByDefault ? 'Discard after transcribing' : 'Keep'}
-              />
-              <Row
-                label="Summarisation"
-                value={providerLabel(settings.activeProvider)}
-                hint={providerHint(settings.activeProvider)}
-              />
-            </dl>
+            <>
+              <Group title="Vault" description="Where your recordings, transcripts and notes are written.">
+                <VaultRow settings={settings} onChange={setSettings} />
+              </Group>
+
+              <Group
+                title="Model"
+                description="Transcription runs on this Mac using the model you choose here. Downloaded once, then reused."
+              >
+                <ModelPicker
+                  activeModel={settings.activeModel}
+                  onSelect={(id) => void update({ activeModel: id })}
+                />
+              </Group>
+
+              <Group title="Recording">
+                <Toggle
+                  label="Voice detection"
+                  checked={settings.vadEnabled}
+                  onChange={(v) => void update({ vadEnabled: v })}
+                  hint="Skips silence before transcribing. Leaving it off makes the model invent speech during quiet stretches, and a system audio tap captures a lot of them."
+                />
+                <Toggle
+                  label="Delete audio after transcribing"
+                  checked={settings.discardAudioByDefault}
+                  onChange={(v) => void update({ discardAudioByDefault: v })}
+                  hint="The default for new meetings; each one can still be changed before you record. Keeping audio is what lets you click a line of transcript and hear it."
+                />
+                <Toggle
+                  label="Open at login"
+                  checked={settings.launchAtLogin}
+                  onChange={(v) => void update({ launchAtLogin: v })}
+                  hint="Oratio lives in the menu bar, so it needs to be running before a meeting starts to be useful."
+                />
+              </Group>
+
+              <Group
+                title="Summaries"
+                description="Optional, and the only part of Oratio that can use a provider."
+              >
+                <ProviderSettings settings={settings} onChange={(p) => void update(p)} />
+
+                {/*
+                  A standing property of the app, not a note attached to
+                  whichever provider is selected. It does not change when the
+                  provider does, so it does not live inside the choice.
+                */}
+                <p className="rounded-md bg-(--color-raised) px-3 py-2.5 text-xs leading-relaxed text-(--color-ink-dim)">
+                  <strong className="font-semibold text-(--color-ink)">
+                    Your audio and transcripts never leave this Mac.
+                  </strong>{' '}
+                  Recording and transcription are local, always — there is no
+                  cloud transcription option and no fallback that uploads audio.
+                  A summariser is the one exception, and only ever receives the
+                  finished text of a meeting you explicitly ask it to summarise.
+                </p>
+              </Group>
+
+              <Group title="Permissions">
+                <PermissionsPanel />
+              </Group>
+            </>
           )}
 
-          {/*
-            Stated as a standing property of the app, not as a note attached to
-            the current provider — the guarantee does not change when the
-            provider does, and burying it in a hint would make it read as a
-            caveat rather than the design. Phase 9 adds the key fields below
-            this; the sentence stays wherever they land.
-          */}
-          <p className="mt-6 rounded-md bg-(--color-raised) px-3 py-2.5 text-xs leading-relaxed text-(--color-ink-dim)">
-            <strong className="font-semibold text-(--color-ink)">
-              Your audio and transcripts never leave this Mac.
-            </strong>{' '}
-            Recording and transcription are local, always — there is no cloud
-            transcription option and no fallback that uploads audio. A
-            summariser is the one exception, and only ever receives the
-            finished text of a meeting you explicitly ask it to summarise.
-          </p>
-
-          <p className="mt-8 border-t border-(--color-line) pt-4 text-xs leading-relaxed text-(--color-ink-faint)">
-            These are read-only for now — editing arrives with the model picker
-            and first-run setup.
-          </p>
+          {error && <p className="text-xs text-(--color-live)">{error}</p>}
         </div>
       </div>
     </div>
   )
 }
 
-function providerLabel(id: Settings['activeProvider']): string {
-  switch (id) {
-    case 'ollama':
-      return 'Ollama (local)'
-    case 'anthropic':
-      return 'Anthropic'
-    case 'openai':
-      return 'OpenAI'
-    default:
-      return 'Off'
-  }
-}
-
-/**
- * Says where a meeting's text goes, in the same words for every provider.
- *
- * "Local" and "leaves this Mac" are the only two answers that matter, and the
- * user should not have to know that Ollama is a local server to work out which
- * one they are getting.
- */
-function providerHint(id: Settings['activeProvider']): string {
-  switch (id) {
-    case 'ollama':
-      return 'Runs on this Mac. Nothing is sent anywhere.'
-    case 'anthropic':
-    case 'openai':
-      return 'Summaries only. The transcript of a meeting you summarise is sent to this provider over the network; audio never is.'
-    default:
-      return 'No summariser configured. Everything else works without one.'
-  }
-}
-
-function Row({
-  label,
-  value,
-  hint,
-  mono = false,
+function VaultRow({
+  settings,
+  onChange,
 }: {
-  label: string
-  value: string
-  hint?: string
-  mono?: boolean
+  settings: Settings
+  onChange: (s: Settings) => void
+}): React.JSX.Element {
+  const [error, setError] = useState<string | null>(null)
+
+  async function pick(): Promise<void> {
+    const path = await window.oratio.settings.pickVault()
+    // Null means the user cancelled the dialog, which is not an error and
+    // must not clear the existing path.
+    if (path) onChange({ ...settings, vaultPath: path })
+  }
+
+  async function reveal(): Promise<void> {
+    setError(null)
+    try {
+      await window.oratio.settings.revealVault()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-(--color-line) bg-(--color-surface) px-3 py-2.5">
+      <p className="font-mono text-xs break-all text-(--color-ink)">{settings.vaultPath}</p>
+      <div className="mt-2 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => void pick()}
+          className="rounded-md bg-(--color-ink) px-2 py-1 text-[11px] font-medium text-(--color-surface) hover:opacity-90"
+        >
+          Change…
+        </button>
+        <button
+          type="button"
+          onClick={() => void reveal()}
+          className="rounded-md border border-(--color-line) px-2 py-1 text-[11px] text-(--color-ink-dim) hover:bg-(--color-raised) hover:text-(--color-ink)"
+        >
+          Reveal in Finder
+        </button>
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-(--color-ink-faint)">
+        Plain Markdown and JSON, one folder per meeting. Nothing here needs
+        Oratio to read it.
+      </p>
+      {error && <p className="mt-1 text-[11px] text-(--color-live)">{error}</p>}
+    </div>
+  )
+}
+
+function Group({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: string
+  children: React.ReactNode
 }): React.JSX.Element {
   return (
-    <div className="border-b border-(--color-line) py-3 last:border-b-0">
-      <div className="flex items-baseline gap-4">
-        <dt className="w-36 shrink-0 text-[13px] text-(--color-ink-dim)">{label}</dt>
-        <dd
-          className={`min-w-0 flex-1 text-[13px] text-(--color-ink) ${mono ? 'font-mono text-xs break-all' : ''}`}
-        >
-          {value}
-        </dd>
+    <section className="flex flex-col gap-2">
+      <div>
+        <h2 className="text-[13px] font-semibold text-(--color-ink)">{title}</h2>
+        {description && (
+          <p className="mt-0.5 text-xs leading-relaxed text-(--color-ink-dim)">{description}</p>
+        )}
       </div>
-      {hint && <p className="mt-1.5 ml-40 text-xs leading-relaxed text-(--color-ink-faint)">{hint}</p>}
-    </div>
+      {children}
+    </section>
+  )
+}
+
+function Toggle({
+  label,
+  checked,
+  onChange,
+  hint,
+}: {
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+  hint?: string
+}): React.JSX.Element {
+  return (
+    <label className="flex cursor-pointer items-baseline gap-2.5 rounded-lg border border-(--color-line) bg-(--color-surface) px-3 py-2.5">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 size-3.5 shrink-0 accent-(--color-me)"
+      />
+      <span className="min-w-0">
+        <span className="block text-[13px] text-(--color-ink)">{label}</span>
+        {hint && (
+          <span className="mt-0.5 block text-xs leading-relaxed text-(--color-ink-faint)">
+            {hint}
+          </span>
+        )}
+      </span>
+    </label>
   )
 }

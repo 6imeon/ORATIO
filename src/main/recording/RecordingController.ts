@@ -8,6 +8,7 @@ import { TARGET_SAMPLE_RATE, type CaptureResult } from '../audio/AudioCapture'
 import type { MacAudioCapture } from '../audio/MacAudioCapture'
 import { createSessionDir, writeMeta, FILES } from '../storage/vault'
 import { loadSettings } from '../storage/settings'
+import { writeCaptureHealth } from '../storage/captureHealth'
 
 /**
  * Owns a recording from start to meta.json.
@@ -43,6 +44,18 @@ export interface RecordingControllerDeps {
   broadcastState: (state: RecordingState) => void
   /** Ask the renderer to open/close its mic. Returns false if no window exists. */
   requestMic: (start: boolean) => boolean
+  /**
+   * Whether a usable ASR model is installed.
+   *
+   * A precondition of recording rather than of transcription, even though it
+   * is transcription that needs it. Without this check a new user — or anyone
+   * who deleted their model — records a full meeting successfully and is told
+   * only afterwards that nothing can be done with it. The audio is not lost,
+   * but the failure arrives an hour late and at a moment when it cannot be
+   * acted on. Refusing at the start is the only point where the answer is
+   * still useful.
+   */
+  hasModel: () => Promise<boolean>
 }
 
 export class RecordingController extends EventEmitter {
@@ -140,6 +153,14 @@ export class RecordingController extends EventEmitter {
 
   async start(opts: StartRecordingOptions = {}): Promise<StartRecordingResult> {
     if (this.#sessionId) throw new Error('Already recording')
+
+    // Checked here, before a directory exists, so a refusal leaves nothing
+    // behind. The message is what the user sees on the record button.
+    if (!(await this.#deps.hasModel())) {
+      throw new Error(
+        'No speech model is installed yet. Open Settings to download one — it only has to happen once.',
+      )
+    }
 
     const settings = await loadSettings()
     const startedAt = new Date()
@@ -242,6 +263,22 @@ export class RecordingController extends EventEmitter {
     })
 
     await writeMeta(dir, meta)
+
+    /**
+     * The only moment this evidence exists.
+     *
+     * macOS cannot be asked whether system-audio capture is permitted, so the
+     * Settings panel infers it from whether a completed track carried any
+     * signal at all. That is knowable here and nowhere else — `#reset()` below
+     * clears the peaks, and the next launch has no recording to look at. Not
+     * awaited into the critical path: it is diagnostic, and a failure to
+     * record it must not affect the meeting that just saved successfully.
+     */
+    void writeCaptureHealth({
+      observedAt: new Date().toISOString(),
+      micPeak: result.mic.peak,
+      systemPeak: result.system.peak,
+    })
 
     log.info('[recording] stopped', {
       sessionId,
