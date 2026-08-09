@@ -272,6 +272,35 @@ for what has to land first.
   When there is too little quiet to judge from, Oratio now leaves the transcript
   alone rather than guessing.
 
+- **Playing a meeting back only ever played one side at a time.** Playback
+  followed the transcript: your microphone during your turns, the meeting audio
+  during theirs, never both. With headphones on — where your microphone records
+  you and nothing else — interrupting someone made the other side *vanish* for
+  the length of your interjection, then resume having skipped that stretch.
+
+  Every part of that was working as built, which is why it was easy to miss. It
+  still meant the one moment worth going back to — where you and someone else
+  talk over each other, and the transcript is least reliable — was the one moment
+  the player could not reproduce.
+
+  Both tracks now play together. Recordings are still kept as two separate files
+  and speaker labels still come from that split; only what you hear has changed.
+
+- **The other side was much louder than you on playback.** Meeting audio is
+  captured digitally at close to full volume while your microphone is a room
+  away, leaving the two sides 18–27 dB apart — you sounded distant in your own
+  recording.
+
+  Oratio now measures both sides of each recording and evens them out. Measured
+  per recording rather than fixed, because the gap depends on the microphone:
+  the difference between a laptop's built-in microphone and a headset was nearly
+  9 dB. Nothing is ever amplified — the louder side is brought down — so a quiet
+  microphone is never turned into hiss.
+
+  One consequence worth knowing: because the correction only ever turns things
+  down, recordings made on a quiet microphone play back quieter overall, and you
+  may need your system volume higher than before.
+
 - **Interruptions appeared after the paragraph they interrupted.** Speaking over
   someone during a long, unbroken stretch of their speech put your words *after*
   everything they said, rather than at the point where you said them. The words

@@ -5,17 +5,41 @@ import { findTurnAt, type Turn } from '../lib/turns'
  * Playback across two never-mixed tracks.
  *
  * The two audio tracks are separate files by design — mic is "me", system is
- * "them", and that split is what gives speaker attribution for free. It also
- * means playback is not "press play on a file": at every handoff the sound has
- * to move to the other element, seeking it to the shared session clock.
+ * "them", and that split is what gives speaker attribution for free. **That
+ * invariant is about storage and attribution, not monitoring.** Both elements
+ * play together here and the browser mixes them; the files are never modified
+ * and the speaker labels never depend on this.
  *
- * So there is one logical playhead, in session-clock milliseconds, and two
- * elements that take turns being the one that is actually running. Everything
- * below exists to keep that single playhead coherent.
+ * ## Why this used to play one track at a time, and why that was wrong
  *
- * Only one element ever plays at a time. Playing both and muting one would
- * drift — two independent media clocks resynced only at handoffs — and would
- * also decode twice for no audible gain.
+ * Playback previously followed the transcript: mic.wav during a "me" turn,
+ * system.wav during a "them" turn, one element ever running. The stated reason
+ * was drift — two media clocks resynced only at handoffs — plus decoding twice.
+ *
+ * It made the meeting impossible to hear as it happened. Reported from a
+ * headset recording: the far end plays, the user interjects, and the video
+ * *disappears* for the length of the interjection, then resumes having skipped
+ * that stretch. All three behaviours were correct in isolation — a headset mic
+ * genuinely contains no far-end audio (measured: median -74.9 dB, 3.7 dB above
+ * its own noise floor), and the handoff seeks to the shared clock, so whatever
+ * played underneath the interjection is simply never heard.
+ *
+ * The moment that destroys is exactly the moment worth reviewing: overlapping
+ * speech is where the transcript is least reliable, so it is where a user most
+ * needs the audio, and it was the one thing single-track playback could not
+ * reproduce. Every comparable tool (Zoom, Riverside, Descript) records separate
+ * tracks and plays back mixed for the same reason.
+ *
+ * ## How the two elements stay together
+ *
+ * One element owns the clock and the other follows it. The **system** track
+ * owns it: it is the full-length continuous recording, and a session may have
+ * no mic track at all, while the reverse is far rarer.
+ *
+ * Drift is handled by correction rather than by avoidance — the follower is
+ * nudged back whenever it strays past `MAX_DRIFT_MS`, checked on `timeupdate`,
+ * which already fires. Seeking a playing element is audible, so the threshold
+ * has to sit above normal jitter; see `MAX_DRIFT_MS`.
  */
 
 export type Track = 'mic' | 'system'
@@ -50,15 +74,21 @@ export interface PlaybackHandle {
 }
 
 /**
- * How far past a turn's end we allow the element to run before handing over.
+ * How far the follower may drift from the clock owner before being resynced.
  *
- * The tracks are continuous recordings, so the "them" track is still rolling
- * (as room tone) underneath a "me" turn. Cutting at exactly `endMs` would clip
- * the last syllable whenever ASR's end timestamp lands slightly early, which it
- * routinely does. A short tail is more forgiving than a hard cut and is
- * inaudible when the timestamps are accurate.
+ * A correction is a seek on a playing element, which is audible — so this must
+ * sit above ordinary jitter or it would chatter constantly and sound worse than
+ * the drift it fixes. `timeupdate` fires only ~4-66×/s and its timestamps are
+ * quantised, so tens of milliseconds of apparent error are normal and mean
+ * nothing.
+ *
+ * 120 ms is below the ~150-200 ms where an offset between two voices starts to
+ * read as an echo, and well above that jitter. The tracks come from independent
+ * Core Audio clients with free-running clocks — the same fact that makes AEC
+ * impossible (see `bleed.ts`) — so real drift does accumulate and does need
+ * correcting; it just accumulates slowly enough that corrections are rare.
  */
-const HANDOFF_TAIL_MS = 250
+const MAX_DRIFT_MS = 120
 
 export function usePlayback(
   turns: Turn[],
@@ -71,81 +101,64 @@ export function usePlayback(
   const [activeIndex, setActiveIndex] = useState(-1)
   const [rate, setRateState] = useState(1)
 
-  /**
-   * Which element owns the playhead right now.
-   *
-   * A ref, not state: it is read inside event handlers that fire many times a
-   * second, and changing it must not re-render on its own — the position
-   * update that accompanies it already does.
-   */
-  const currentTrack = useRef<Track>('mic')
-
   const available = Boolean(urls && (urls.mic || urls.system))
   const durationMs = turns.length > 0 ? (turns[turns.length - 1]?.endMs ?? 0) : 0
 
-  const elementFor = useCallback(
-    (track: Track): HTMLAudioElement | null =>
-      track === 'mic' ? micRef.current : systemRef.current,
+  /**
+   * Every element that actually exists. A session recorded with no microphone
+   * has no mic.wav, and one whose audio was partly discarded may have either.
+   */
+  const elements = useCallback(
+    (): HTMLAudioElement[] =>
+      [micRef.current, systemRef.current].filter((el): el is HTMLAudioElement => el !== null),
     [micRef, systemRef],
   )
 
   /**
-   * Which track should be audible at a given moment on the session clock.
+   * The element driving the shared clock.
    *
-   * Driven by the transcript rather than by the audio: the turn under the
-   * playhead names its speaker, and that speaker names the track. Before the
-   * first turn there is nothing to attribute, so we stay on whichever track is
-   * already loaded rather than jumping.
+   * The system track by preference: it is the full-length continuous recording,
+   * and the mic track is the one that can be missing entirely. Falls back to the
+   * mic so a system-less session still plays.
    */
-  const trackAt = useCallback(
-    (ms: number): Track => {
-      const index = findTurnAt(turns, ms)
-      const turn = index >= 0 ? turns[index] : undefined
-      if (!turn) return currentTrack.current
-      return turn.speaker === 'me' ? 'mic' : 'system'
-    },
-    [turns],
+  const clockOwner = useCallback(
+    (): HTMLAudioElement | null => systemRef.current ?? micRef.current,
+    [micRef, systemRef],
   )
 
   /**
-   * Put the playhead at `ms`, on the right track, and optionally start it.
+   * Put every track at `ms` and optionally start them.
    *
-   * This is the single place a handoff happens. It pauses the outgoing element
-   * before seeking the incoming one, so there is never a moment where both are
-   * running — which would double up the room tone audibly.
+   * Both elements are seeked, not just the audible one — there is no "audible
+   * one" any more. Each element's own file may be shorter than the session
+   * (the mic track routinely is), and seeking past the end of a file is
+   * harmless: it simply sits at its end contributing silence, which is exactly
+   * what that track contains at that moment.
    */
   const locate = useCallback(
     (ms: number, shouldPlay: boolean): void => {
       if (!available) return
 
       const clamped = Math.max(0, ms)
-      let track = trackAt(clamped)
 
-      // Fall back to whichever track actually exists. A session recorded with
-      // no microphone has no mic.wav at all, and its "them" turns must still
-      // play rather than silently doing nothing.
-      if (!elementFor(track)) track = track === 'mic' ? 'system' : 'mic'
-      const el = elementFor(track)
-      if (!el) return
-
-      if (currentTrack.current !== track) {
-        elementFor(currentTrack.current)?.pause()
-        currentTrack.current = track
+      for (const el of elements()) {
+        el.playbackRate = rate
+        el.currentTime = clamped / 1000
       }
 
-      el.playbackRate = rate
-      el.currentTime = clamped / 1000
       setPositionMs(clamped)
       setActiveIndex(findTurnAt(turns, clamped))
 
       if (shouldPlay) {
-        // `play()` rejects if the element is torn down mid-call (session
-        // switch, drawer close). That is not an error worth surfacing.
-        void el.play().catch(() => {})
+        for (const el of elements()) {
+          // `play()` rejects if the element is torn down mid-call (session
+          // switch, drawer close). That is not an error worth surfacing.
+          void el.play().catch(() => {})
+        }
         setPlaying(true)
       }
     },
-    [available, trackAt, elementFor, rate, turns],
+    [available, elements, rate, turns],
   )
 
   const play = useCallback((): void => {
@@ -157,10 +170,9 @@ export function usePlayback(
   }, [available, positionMs, durationMs, locate])
 
   const pause = useCallback((): void => {
-    micRef.current?.pause()
-    systemRef.current?.pause()
+    for (const el of elements()) el.pause()
     setPlaying(false)
-  }, [micRef, systemRef])
+  }, [elements])
 
   const toggle = useCallback((): void => {
     if (playing) pause()
@@ -215,13 +227,11 @@ export function usePlayback(
   const setRate = useCallback(
     (r: number): void => {
       setRateState(r)
-      // Applied to both elements, not just the running one: the idle element
-      // is mid-handoff away from being the running one, and a rate that only
-      // takes effect at the next speaker change reads as a broken control.
-      if (micRef.current) micRef.current.playbackRate = r
-      if (systemRef.current) systemRef.current.playbackRate = r
+      // Both elements, always: they play together, so a rate applied to one
+      // would pull them apart at a rate no drift correction could keep up with.
+      for (const el of elements()) el.playbackRate = r
     },
-    [micRef, systemRef],
+    [elements],
   )
 
   /**
@@ -233,10 +243,12 @@ export function usePlayback(
    * reconciliation on that path.
    */
   const onTimeUpdate = useCallback(
-    (track: Track, el: HTMLAudioElement): void => {
-      // A stale element still draining its buffer after a handoff must not
-      // drag the playhead backwards.
-      if (track !== currentTrack.current) return
+    (_track: Track, el: HTMLAudioElement): void => {
+      // Only the clock owner moves the playhead. Both elements fire this, and
+      // letting the follower write the position would make the playhead jitter
+      // between two slightly different clocks.
+      const owner = clockOwner()
+      if (!owner || el !== owner) return
 
       const ms = el.currentTime * 1000
       setPositionMs(ms)
@@ -246,55 +258,49 @@ export function usePlayback(
 
       if (!playing) return
 
-      const turn = index >= 0 ? turns[index] : undefined
-      if (!turn) return
-
-      /**
-       * The handoff.
+      /*
+       * Drift correction.
        *
-       * The rule is positional, not transitional: the turn under the playhead
-       * names the speaker, the speaker names the track, and if that is not the
-       * track currently sounding then we are on the wrong one and must move.
-       *
-       * Phrasing it as "did we run past the previous turn's end" instead is
-       * wrong whenever there is a gap between turns — the playhead crosses
-       * into the next turn while still inside the tail window, the check does
-       * not fire, and the whole turn plays from the other speaker's track.
-       * That is silence at best and the wrong voice at worst.
+       * Only ever corrects the follower, never the owner — moving the owner
+       * would move the playhead itself and fight the user's own seeks. A
+       * follower whose file has already ended is left alone: it is legitimately
+       * parked at its end contributing silence, and seeking it would be both
+       * pointless and audible.
        */
-      const wanted: Track = turn.speaker === 'me' ? 'mic' : 'system'
-      if (wanted !== track) {
-        // Seek to wherever we already are, not to the turn's start: the
-        // playhead is legitimately mid-turn after a scrub, and restarting the
-        // turn would fight the user's seek.
-        locate(Math.max(ms, turn.startMs), true)
-        return
+      for (const other of elements()) {
+        if (other === owner || other.ended) continue
+        if (Math.abs(other.currentTime - el.currentTime) * 1000 > MAX_DRIFT_MS) {
+          other.currentTime = el.currentTime
+        }
       }
 
       // Past the last turn there is no more transcript, so stop rather than
       // playing out the remaining room tone on whichever file is longer.
-      if (index === turns.length - 1 && ms > turn.endMs + HANDOFF_TAIL_MS) {
+      if (index === turns.length - 1 && ms > durationMs) {
         pause()
         setPositionMs(durationMs)
       }
     },
-    [turns, playing, pause, locate, durationMs],
+    [turns, playing, pause, durationMs, clockOwner, elements],
   )
 
   /**
-   * Element `ended` is the file running out, which is not the same as the
-   * transcript ending — the two tracks are different lengths. If there is more
-   * transcript after this point, continue on the other track.
+   * Element `ended` is one file running out, which is not the transcript
+   * ending — the tracks are different lengths, and the mic track is routinely
+   * the shorter one.
+   *
+   * So the shorter file simply stops contributing and the other plays on. Only
+   * the clock owner running out ends playback, and even then the transcript may
+   * genuinely continue past it, which `onTimeUpdate` handles by position.
    */
   const onEnded = useCallback(
     (track: Track): void => {
-      if (track !== currentTrack.current) return
-      const index = findTurnAt(turns, positionMs ?? 0)
-      const next = turns[index + 1]
-      if (next && playing) locate(next.startMs, true)
-      else pause()
+      const owner = clockOwner()
+      const el = track === 'mic' ? micRef.current : systemRef.current
+      if (!owner || el !== owner) return
+      pause()
     },
-    [turns, positionMs, playing, locate, pause],
+    [clockOwner, micRef, systemRef, pause],
   )
 
   // Reset when the session changes. Without this, opening a second meeting
@@ -303,7 +309,6 @@ export function usePlayback(
     setPlaying(false)
     setPositionMs(null)
     setActiveIndex(-1)
-    currentTrack.current = 'mic'
   }, [urls])
 
   return {

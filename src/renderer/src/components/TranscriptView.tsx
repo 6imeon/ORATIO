@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { formatClock, type Turn } from '../lib/turns'
+import { computeBalance } from '../lib/balance'
 import { usePlayback } from '../hooks/usePlayback'
 import { TransportBar } from './TransportBar'
 
@@ -28,8 +29,10 @@ interface Props {
  * often say is missing from the commercial tools, and one Granola
  * structurally cannot offer because it keeps no audio at all.
  *
- * Two <audio> elements, one per track, because the tracks are never mixed:
- * a "me" line plays from mic.wav, a "them" line from system.wav.
+ * Two <audio> elements, one per track, played TOGETHER and mixed by the
+ * browser — so the meeting is heard as it happened, including the overlaps.
+ * The files are never modified and attribution never depends on this; see
+ * `usePlayback` for why single-track playback was wrong.
  */
 export function TranscriptView({
   sessionId,
@@ -58,6 +61,68 @@ export function TranscriptView({
       setUrls({ mic, system })
     })()
   }, [sessionId])
+
+  /**
+   * Level-match the two tracks, once per session.
+   *
+   * The system track is a digital tap near full scale and the mic is an acoustic
+   * capture, so mixing them raw buries the near-end speaker — measured at 18-27
+   * dB apart depending on the microphone, and the gap is device-dependent, so
+   * this is derived per session rather than fixed.
+   *
+   * ## Why `element.volume` and not a WebAudio gain graph
+   *
+   * Boosting the quiet track would be the better correction — it keeps the mix
+   * at a normal listening level instead of pulling everything down to meet the
+   * mic. It needs WebAudio, because `volume` is capped at 1.0 and can only
+   * attenuate.
+   *
+   * That was built and **it silences playback**. `createMediaElementSource`
+   * reroutes an element into the graph permanently, and in this renderer the
+   * audio then never reaches the output: measured with both elements at
+   * `readyState: 4`, unmuted, `volume: 1`, no media error, and the context
+   * `running` with unity gain — every observable healthy, and no sound. The
+   * cause was not identified; what is recorded here is that the approach does
+   * not work in this environment, so that it is not attempted again blind.
+   *
+   * So the loud track is attenuated instead. The cost is real and known: the
+   * whole mix sits at the quieter track's level (about -46 dBFS on a headset
+   * recording), so the user turns their system volume up. Audible and quiet
+   * beats balanced and silent.
+   */
+  useEffect(() => {
+    if (!urls?.mic || !urls.system) return
+    let cancelled = false
+
+    void (async () => {
+      const ctx = new AudioContext()
+      try {
+        const [mic, system] = await Promise.all(
+          [urls.mic, urls.system].map(async (url) =>
+            ctx.decodeAudioData(await (await fetch(url!)).arrayBuffer()),
+          ),
+        )
+        if (cancelled) return
+
+        const balance = computeBalance(mic ?? null, system ?? null)
+        if (micRef.current) micRef.current.volume = balance.mic
+        if (systemRef.current) systemRef.current.volume = balance.system
+      } catch {
+        // Leave both at full volume — an unbalanced mix beats no audio, and a
+        // decode failure must not take the transcript view down with it.
+        if (micRef.current) micRef.current.volume = 1
+        if (systemRef.current) systemRef.current.volume = 1
+      } finally {
+        // Only ever used to read samples, never for playback, so it is closed
+        // immediately rather than holding an audio unit open.
+        void ctx.close()
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [urls])
 
   /**
    * All transport state lives in the hook: one playhead on the shared session
@@ -161,7 +226,10 @@ export function TranscriptView({
         <audio
           ref={micRef}
           src={urls.mic}
-          preload="metadata"
+          /* Both tracks play together, so both must be buffered before the
+             first play — "metadata" leaves the second one stalling audibly at
+             the start. These are local files, so there is no bandwidth cost. */
+          preload="auto"
           onTimeUpdate={(e) => playback.onTimeUpdate('mic', e.currentTarget)}
           onEnded={() => playback.onEnded('mic')}
         />
@@ -170,7 +238,10 @@ export function TranscriptView({
         <audio
           ref={systemRef}
           src={urls.system}
-          preload="metadata"
+          /* Both tracks play together, so both must be buffered before the
+             first play — "metadata" leaves the second one stalling audibly at
+             the start. These are local files, so there is no bandwidth cost. */
+          preload="auto"
           onTimeUpdate={(e) => playback.onTimeUpdate('system', e.currentTarget)}
           onEnded={() => playback.onEnded('system')}
         />
