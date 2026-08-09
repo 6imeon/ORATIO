@@ -62,6 +62,12 @@ interface Deps {
    * knows how many windows there are.
    */
   claimMic: (webContentsId: number) => boolean
+  /**
+   * Settings were written. Lets main apply the ones that own live resources —
+   * currently meeting detection, which runs a child process that has to start
+   * or stop when the toggle moves rather than at the next launch.
+   */
+  onSettingsChanged?: (settings: Settings) => void
 }
 
 /**
@@ -325,6 +331,10 @@ export function registerIpc(deps: Deps): void {
      * dialog. Set here so the renderer and the frame can never disagree.
      */
     nativeTheme.themeSource = next.theme
+
+    // Meeting detection owns a child process, so turning it off has to reach
+    // the detector rather than only the JSON — see `refresh`.
+    deps.onSettingsChanged?.(next)
 
     return next
   })

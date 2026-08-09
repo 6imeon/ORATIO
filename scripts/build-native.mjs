@@ -35,6 +35,9 @@ execFileSync(
     '-mmacosx-version-min=13.0',
     '-framework',
     'CoreAudio',
+    // CFStringRef, for the bundle IDs watch mode reports.
+    '-framework',
+    'CoreFoundation',
     '-o',
     out,
     source,

@@ -135,6 +135,12 @@ export function SettingsView({
                   onChange={(ids) => void update({ excludedBundleIds: ids })}
                 />
                 <Toggle
+                  label="Offer to record when a meeting starts"
+                  checked={settings.meetingSuggestions}
+                  onChange={(v) => void update({ meetingSuggestions: v })}
+                  hint="Notices when Zoom, Teams, Slack or a browser opens the microphone, and asks. It never starts recording on its own, and it does not read your screen or your window titles."
+                />
+                <Toggle
                   label="Open at login"
                   checked={settings.launchAtLogin}
                   onChange={(v) => void update({ launchAtLogin: v })}

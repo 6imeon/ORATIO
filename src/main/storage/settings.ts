@@ -43,6 +43,9 @@ export function defaultSettings(): Settings {
      * to avoid causing.
      */
     excludedBundleIds: ['com.spotify.client', 'com.apple.Music'],
+    // On by default. It only ever offers — see the Settings copy and the
+    // suggest-never-auto-start note in meetingDetector.ts.
+    meetingSuggestions: true,
     launchAtLogin: false,
     providers: [
       { id: 'ollama', enabled: true, model: 'qwen3:4b', baseUrl: 'http://127.0.0.1:11434' },

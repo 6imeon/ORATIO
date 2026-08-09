@@ -1038,13 +1038,42 @@ puts a private conversation on disk. No detection is reliable enough to be
 trusted unsupervised — which is why the commercial tools pay the Screen
 Recording tax and still get it wrong.
 
-- [ ] Poll `kAudioHardwarePropertyProcessObjectList` ~1 s — change listeners for these properties reportedly do not fire (Apple Forums 770348)
-- [ ] Read `BundleID`, `PID`, `IsRunningInput`, `IsRunningOutput` per object
-- [ ] Fall back to a process name when `BundleID` is empty — plain executables have none (confirmed: `afplay` reports an empty bundle ID while audible)
-- [ ] Match known meeting apps: Zoom, **both** Teams bundle IDs (`com.microsoft.teams` and `com.microsoft.teams2`), Slack, browsers
-- [ ] `CptHost` as the high-confidence Zoom in-call signal
-- [ ] Tray suggestion when a match starts using the mic and we are not recording; dismissible, and silent for the rest of that call once dismissed
-- [ ] Setting to turn the suggestion off entirely
+**Polling was the right call, for the wrong reason.** The plan cited Apple
+Forums 770348 — "change listeners do not fire" — and that is not what happens on
+macOS 15. Measured directly:
+
+- A listener on `kAudioHardwarePropertyProcessObjectList` **does** fire, several
+  times per audio event.
+- A listener on `kAudioProcessPropertyIsRunningInput` on a specific object never
+  fired at all, across a full QuickTime record/stop cycle.
+- The two **combined still miss the event that matters**. Registering listeners
+  over every object at startup and re-scanning on each list change caught
+  CoreSpeech but missed QuickTime entirely: an app that starts using the
+  microphone appears as a *new* object, so no listener was on it yet, and the
+  wake that would have found it never arrived.
+
+A 1 s poll over the same window tracked QuickTime exactly — appearing at 4 s,
+clearing at 11 s, matching the recording. Polling is therefore not a fallback
+here; it is the only approach measured to be correct. One scan is ~2 ms (0.2% of
+a core), so the probe is one long-lived process polling internally rather than
+re-spawned each second — fork+exec costs ~50 ms against the scan's 2 ms.
+
+- [x] Poll `kAudioHardwarePropertyProcessObjectList` ~1 s — **and the stated reason was wrong**; see above for what actually fails
+- [x] Read `BundleID`, `PID`, `IsRunningInput`, `IsRunningOutput` per object
+- [x] Fall back to a process name when `BundleID` is empty — plain executables have none (confirmed: `afplay` reports an empty bundle ID while audible)
+- [x] Match known meeting apps: Zoom, **both** Teams bundle IDs (`com.microsoft.teams` and `com.microsoft.teams2`), Slack, browsers
+- [x] `CptHost` as the high-confidence Zoom in-call signal
+- [x] Tray suggestion when a match starts using the mic and we are not recording; dismissible, and silent for the rest of that call once dismissed
+- [x] Setting to turn the suggestion off entirely — and it stops the probe process, not just the notification
+- [x] Debounce over two consecutive scans, so a momentary microphone grab is not a meeting
+- [x] Key detection on the matched app prefix, not the raw bundle ID *(see below)*
+
+**A Chrome call is three bundle IDs, not one.** Phase 11 established that Chrome
+is three audio objects; what this phase added is that they carry *different*
+bundle IDs — `com.google.Chrome` plus two `com.google.Chrome.helper`. Deduping
+by bundle ID therefore leaves three distinct strings for one meeting, and it
+fired two suggestions for a single call before this was caught. Detection keys
+on the matched prefix instead, which collapses them to one.
 
 **Do not** read window titles or request Accessibility. `kCGWindowName` has been
 gated behind Screen Recording since 10.15 — not 15 — Sequoia re-prompts for that
@@ -1054,10 +1083,15 @@ we avoided by choosing AudioTee over `desktopCapturer`.
 
 ### Verification
 
-- [ ] Probe reports the correct bundle ID while a call is live, and stops when it ends
-- [ ] Confirm **no permission prompt** is triggered by enumeration alone
-- [ ] Chrome resolves sensibly despite appearing as multiple audio objects (main + helpers — observed as three)
-- [ ] Suggestion does not fire while Oratio is already recording
+- [x] Probe reports the correct bundle ID while a call is live, and stops when it ends *(QuickTime: appears at 4 s, clears at 11 s, matching the recording exactly)*
+- [x] Confirm **no permission prompt** is triggered by enumeration alone *(re-verified after adding the flags, and again in the packaged app after 20 s of polling)*
+- [x] Chrome resolves sensibly despite appearing as multiple audio objects (main + helpers — observed as three) *(one suggestion, not three — this is what the prefix key fixes)*
+- [x] Suggestion does not fire while Oratio is already recording *(and the suppressed call is still tracked, so no late banner when the recording stops mid-call)*
+- [x] End-to-end in the running app: fires once for a sustained call, twice for two calls (proving the call-end reset), zero times for a non-meeting app holding the mic
+- [x] Setting off ⇒ no probe process at all, and no detection
+- [x] Probe dies with its parent — no orphan polling the microphone after quit
+- [x] Packaged: universal binary, unpacked, watch mode runs from inside the `.app`, and the app resolves it out of `app.asar.unpacked`
+- [x] Scan framing survives split reads, including byte-at-a-time delivery
 
 ---
 

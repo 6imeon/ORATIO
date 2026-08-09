@@ -260,6 +260,16 @@ export interface Settings {
    * nobody anticipated is still captured.
    */
   excludedBundleIds: string[]
+  /**
+   * Offer to start recording when a meeting app opens the microphone.
+   *
+   * A suggestion in the tray, never an automatic start: a missed prompt costs
+   * one click, an unwanted auto-record puts a private conversation on disk. On
+   * by default because the detection is passive — enumerating audio processes
+   * needs no permission and raises no prompt — and because the failure it
+   * addresses is realising ten minutes in that nothing was being recorded.
+   */
+  meetingSuggestions: boolean
   launchAtLogin: boolean
   providers: ProviderConfig[]
   activeProvider: ProviderId | null

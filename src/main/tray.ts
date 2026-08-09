@@ -1,4 +1,4 @@
-import { Menu, Tray, nativeImage, app, powerMonitor, globalShortcut } from 'electron'
+import { Menu, Tray, nativeImage, app, powerMonitor, globalShortcut, Notification } from 'electron'
 import { join } from 'node:path'
 import log from 'electron-log/main'
 import type { NativeImage } from 'electron'
@@ -32,6 +32,8 @@ interface TrayDeps {
   openSettings: () => void
   /** Most recent sessions, newest first. Read lazily, on menu open. */
   recentSessions: () => Promise<Session[]>
+  /** The user declined this call's suggestion — stay quiet until it ends. */
+  dismissSuggestion: () => void
 }
 
 /**
@@ -58,6 +60,16 @@ let ticker: NodeJS.Timeout | null = null
 let startedAt: number | null = null
 let transcribing = 0
 let deps: TrayDeps | null = null
+
+/**
+ * The app we have noticed using the microphone, if any.
+ *
+ * Held here rather than in the detector because it is display state: it decides
+ * what the menu's first row says, and it is cleared by the user acting on it as
+ * well as by the call ending.
+ */
+let suggestion: { name: string } | null = null
+let suggestionNotice: Notification | null = null
 
 /**
  * Icons are built once and reused.
@@ -214,6 +226,29 @@ function menuTemplate(
     },
   ]
 
+  // Above Recent and below the toggle: this is a prompt about right now, and
+  // it sits next to the action it is proposing.
+  if (suggestion && !isRecording) {
+    items.push(
+      { type: 'separator' },
+      { label: `${suggestion.name} is using the microphone`, enabled: false },
+      {
+        label: 'Record this meeting',
+        click: () => {
+          clearSuggestion()
+          void toggle()
+        },
+      },
+      {
+        label: 'Not now',
+        click: () => {
+          d.dismissSuggestion()
+          clearSuggestion()
+        },
+      },
+    )
+  }
+
   // Only while it is true. A permanent "Idle" row would be noise, and the
   // point of this state is that it appears when there is something to say.
   if (state === 'transcribing') {
@@ -340,6 +375,49 @@ export function setRecordingState(active: boolean): void {
     // macOS nap the process would stall the counter mid-meeting.
     ticker.unref?.()
   }
+  void rebuild()
+}
+
+/**
+ * A meeting app started using the microphone.
+ *
+ * Two surfaces, because the tray alone is not enough: the menu is only visible
+ * once clicked, and someone who has just joined a call is looking at the call.
+ * The notification is the thing that actually reaches them; the menu row is
+ * what they find if they dismiss the banner and change their mind.
+ *
+ * This never starts a recording. `Notification` here has no action that records
+ * directly — clicking it opens the menu-bar item's own affordance — because a
+ * misfired banner click must not be able to begin capturing a private
+ * conversation.
+ */
+export function suggestRecording(name: string): void {
+  // A second suggestion while one is already showing would stack banners for
+  // what is usually the same call arriving on two bundle IDs.
+  if (suggestion) return
+  suggestion = { name }
+  void rebuild()
+
+  if (!Notification.isSupported()) return
+  const notice = new Notification({
+    title: 'Recording suggested',
+    body: `${name} is using the microphone. Start recording this meeting?`,
+    silent: true, // it arrives during a call; a chime would go down the mic
+  })
+  // Clicking opens the window rather than recording, so the decision is always
+  // made deliberately and in a place that shows what is about to happen.
+  notice.on('click', () => deps?.showMainWindow())
+  notice.on('close', () => deps?.dismissSuggestion())
+  suggestionNotice = notice
+  notice.show()
+}
+
+/** The call ended, or the user acted. Clears both surfaces. */
+export function clearSuggestion(): void {
+  if (!suggestion) return
+  suggestion = null
+  suggestionNotice?.close()
+  suggestionNotice = null
   void rebuild()
 }
 

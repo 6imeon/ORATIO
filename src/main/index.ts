@@ -15,7 +15,15 @@ import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
 import { readMeta, readTranscript, listSessions, sessionDir } from './storage/vault'
-import { createTray, registerTrayLifecycle, setRecordingState, setTranscribing } from './tray'
+import {
+  createTray,
+  registerTrayLifecycle,
+  setRecordingState,
+  setTranscribing,
+  suggestRecording,
+  clearSuggestion,
+} from './tray'
+import { MeetingDetector } from './audio/meetingDetector'
 
 log.initialize()
 log.transports.file.level = 'info'
@@ -70,6 +78,21 @@ let indexClient: IndexClient | null = null
  * Null until the app is ready.
  */
 let recordingController: RecordingController | null = null
+
+/**
+ * The meeting detector, and the setting that gates it.
+ *
+ * Module-scope so `before-quit` can stop the probe process: it is a child of
+ * this one, and leaving it running past quit would keep a process polling the
+ * microphone state of a machine whose recorder has exited — precisely the
+ * behaviour this app exists not to have.
+ *
+ * The setting is a holder for the same reason as `excludedBundleIds`: the
+ * `settings` snapshot is read once at launch, and toggling this in Settings has
+ * to take effect immediately rather than at the next app start.
+ */
+let detector: MeetingDetector | null = null
+const meetingSuggestions = { current: false }
 
 /**
  * Push an event to every live renderer.
@@ -429,6 +452,10 @@ void app.whenReady().then(async () => {
     showMainWindow,
     claimMic,
     rebuildIndex: () => reconcileIndex(true),
+    onSettingsChanged: (next) => {
+      meetingSuggestions.current = next.meetingSuggestions
+      detector?.refresh()
+    },
   })
 
   // Registered once, not per recording: the renderer opens a fresh port for
@@ -458,7 +485,35 @@ void app.whenReady().then(async () => {
     // and a session can appear from a recording started in another window.
     // listSessions already sorts newest-first, and the tray takes the head.
     recentSessions: async () => listSessions((await loadSettings()).vaultPath),
+    dismissSuggestion: () => detector?.dismiss(),
   })
+
+  /**
+   * Meeting detection.
+   *
+   * Started after the tray exists, because a suggestion with nowhere to appear
+   * is worse than a slightly later one — the probe would otherwise be able to
+   * fire in the window between spawning and `createTray`.
+   *
+   * `isRecording` is read from the controller rather than tracked here so the
+   * suppression is correct no matter who started the recording.
+   */
+  meetingSuggestions.current = settings.meetingSuggestions
+  detector = new MeetingDetector({
+    isRecording: () => recording.isRecording(),
+    enabled: () => meetingSuggestions.current,
+    onMeetingStarted: (app) => {
+      log.info('[detect] meeting app opened the microphone', app)
+      suggestRecording(app.name)
+    },
+    onMeetingEnded: () => clearSuggestion(),
+  })
+  detector.start()
+
+  // A recording started by any route answers the suggestion, so the banner and
+  // the menu row must go — including when the user ignored both and used the
+  // shortcut.
+  recording.on('started', () => clearSuggestion())
 
   // The tray shows a live elapsed counter, so it needs to know when recording
   // starts and stops regardless of who asked — window, tray, or shortcut.
@@ -635,4 +690,7 @@ app.on('before-quit', () => {
   // kills it. Left running it would outlive the app as an orphan holding a WAL
   // lock on the database.
   indexClient?.close()
+  // Same reasoning: the probe is a child process that polls forever, and an
+  // orphaned one would keep watching the microphone after the recorder exits.
+  detector?.stop()
 })

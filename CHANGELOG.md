@@ -13,6 +13,21 @@ for what has to land first.
 
 ### Added
 
+- **Oratio notices when a meeting starts.** When Zoom, Teams, Slack, FaceTime or
+  a browser opens the microphone, the menu bar offers to record it — a
+  notification and a "Record this meeting" item in the tray menu. "Not now"
+  silences it for the rest of that call.
+
+  It only ever offers. Nothing starts recording on its own, and that is a
+  deliberate limit rather than a missing feature: a missed prompt costs one
+  click, while an unwanted automatic recording puts a private conversation on
+  disk. It also does not read your screen or your window titles — detection uses
+  the same audio-process list the app already reads, which needs no permission
+  and raises no prompt, so nothing new is being asked for.
+
+  Turning it off in Settings → Recording stops the background check entirely
+  rather than just hiding the notification.
+
 - **Apps can be kept out of the recording.** The system-audio tap was
   all-or-nothing, so music playing during a meeting landed in the "them" track
   and came back in the transcript as whatever the model made of the lyrics.
