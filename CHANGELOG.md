@@ -249,6 +249,29 @@ for what has to land first.
 
 ### Fixed
 
+- **Your own speech could vanish from the transcript entirely.** With a headset
+  on and the other side talking, everything you said over them was silently
+  deleted — not misattributed, not garbled, simply absent, while the other
+  side's words came through intact.
+
+  The check that removes the other side's voice from your microphone — the echo
+  you get when using speakers instead of headphones — compared the two tracks'
+  raw loudness. Those tracks are not comparable that way: system audio is
+  captured digitally at close to full volume, while a microphone across a desk
+  is far quieter, and that difference alone was enough to look like echo. On the
+  recording this was found in, it accounted for almost the entire measured gap.
+
+  Oratio now decides once per recording rather than once per sentence, by
+  listening to your microphone during the pauses in the other side's speech. If
+  you were audible there, you were in the room, and nothing you said is removed.
+  Echo removal still works when you record on speakers — that case is unchanged
+  — but it can no longer take a quiet interjection for an echo, because the two
+  are genuinely indistinguishable in that moment and keeping your words is the
+  safer reading.
+
+  When there is too little quiet to judge from, Oratio now leaves the transcript
+  alone rather than guessing.
+
 - **A relative `ORATIO_VAULT` scattered session folders through the working
   tree.** The test-only vault override was passed to `join()` unchecked, so a
   relative value resolved against the current directory — which in `pnpm dev` is

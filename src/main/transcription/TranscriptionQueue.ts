@@ -8,7 +8,7 @@ import type { TranscriptionProgress } from '@shared/ipc'
 import type { TranscriptionEngine } from './TranscriptionEngine'
 import { isLikelyHallucination } from './vad'
 import { removeSpeakerBleed } from './bleed'
-import { readWav, rmsDb } from '../audio/readWav'
+import { measureTrackGains, readWav } from '../audio/readWav'
 import { discardSessionAudio, hasAudio, readMeta } from '../storage/vault'
 import { loadSettings } from '../storage/settings'
 
@@ -176,28 +176,36 @@ export class TranscriptionQueue extends EventEmitter {
       const [mic, system] = await Promise.all([readWav(micPath), readWav(systemPath)])
 
       /**
-       * Levels are read at the segment's own offsets on both tracks.
+       * Ask whether this recording has a near-end speaker at all before
+       * deciding anything about individual segments.
        *
-       * `startMs` is already on the shared session clock — the track offsets
-       * were applied during the merge above — and both WAVs start at the
-       * session anchor, so the same window addresses the same instant in each.
+       * Both WAVs start at the session anchor, so the two envelopes address the
+       * same instants and "the far end is silent here" is a meaningful question
+       * to ask of them. See `measureTrackGains` for why the answer cannot be
+       * derived per segment.
        */
-      const result = removeSpeakerBleed(segments, (seg) => {
-        const m = rmsDb(mic.samples, mic.sampleRate, seg.startMs, seg.endMs)
-        const s = rmsDb(system.samples, system.sampleRate, seg.startMs, seg.endMs)
-        return m - s
-      })
+      const gains = measureTrackGains(mic, system)
+      const result = removeSpeakerBleed(segments, gains.micRelativeDb)
+
+      // Logged even when nothing is removed: this is the number that explains a
+      // wrong verdict in either direction, and it is unrecoverable once
+      // `discardAudio` deletes the tracks.
+      await this.#log(
+        dir,
+        `bleed check: mic reaches ${result.nearEndDb.toFixed(1)} dB relative to system ` +
+          `during far-end pauses (${(gains.soloFraction * 100).toFixed(0)}% of the track ` +
+          `measurable) — ${result.nearEndPresent ? 'near-end speaker present' : 'no near-end speaker'}`,
+      )
 
       if (result.removed > 0) {
         await this.#log(
           dir,
-          `removed ${result.removed} speaker-bleed segments from the mic track ` +
-            `(median ${result.medianLevelDb.toFixed(1)} dB below system audio)`,
+          `removed ${result.removed} speaker-bleed segments from the mic track`,
         )
         log.info('[transcribe] removed speaker bleed', {
           sessionId: meta.id,
           removed: result.removed,
-          medianLevelDb: Number(result.medianLevelDb.toFixed(1)),
+          nearEndDb: Number(result.nearEndDb.toFixed(1)),
         })
       }
 

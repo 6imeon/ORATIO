@@ -45,6 +45,16 @@ import type { TranscriptSegment } from '@shared/types'
  * correlation is high, and Wrigley found correlation so dominant that removing
  * log energy entirely barely moved their ROC curves.
  *
+ * **That last sentence used to be read here as "correlation should replace the
+ * level test", and it should not be.** Every channel in Wrigley's setup is a
+ * microphone; ours are a digital tap and an acoustic mic, and cross-channel
+ * energy behaves differently when the channels are different kinds of device.
+ * Pfau's own Table 2 puts energy NORMALIZATION at 26.4% relative frame-error
+ * improvement against 12.4% for the correlation post-processing on top of it —
+ * energy is the larger win, not the smaller. The level test was never the wrong
+ * feature. It was an unnormalized one, which is a different bug with a different
+ * fix; see `measureTrackGains` in `../audio/readWav.ts`.
+ *
  * Crucially, the clock drift that makes AEC impossible is harmless here.
  * Correlation only needs alignment to within a few milliseconds to attribute a
  * segment; AEC needed it to a fraction of a sample. That asymmetry is the whole
@@ -57,13 +67,23 @@ import type { TranscriptSegment } from '@shared/types'
  *
  * ## What this module does
  *
- * Works on the TRANSCRIPT, not the audio. For each "me" segment it looks for a
- * "them" segment overlapping in time whose text is near-identical, and drops
- * the "me" copy. Text similarity stands in for the correlation feature: two
- * transcriptions of the same acoustic event agree far more than two people
- * independently saying the same thing at the same moment. The measured natural
- * coincidence rate — genuinely simultaneous identical words — is about 0.2% of
- * frames (LibriCSS, arXiv 2509.10143), so a match is close to conclusive.
+ * Works on the TRANSCRIPT, not the audio, and decides at the level of the whole
+ * RECORDING before it looks at any segment: it asks whether the microphone ever
+ * heard anything during the far end's pauses. If it did, there is a person at
+ * that mic and nothing is removed. If it did not, mic segments overlapping
+ * far-end speech are bleed.
+ *
+ * That ordering is the point. Within a single segment, a quiet interjection over
+ * loud far-end audio and room echo of that same audio are the same measurement,
+ * and no per-segment threshold separates them — see `NEAR_END_PRESENT_DB` for
+ * the numbers and for what the earlier per-segment version got wrong.
+ *
+ * Text similarity was previously the confirming signal and has been removed: on
+ * a real bleed-heavy recording it did not separate the classes at all, scoring
+ * as low as 0.14 on genuine bleed (ASR mangles the second-hand copy) and 1.0 on
+ * a legitimate repeat, where one person agrees using the other's words. Phase A2
+ * in ATTRIBUTION.md replaces that role with cross-channel correlation, which is
+ * the feature the literature actually uses.
  *
  * The audio is never modified, so this cannot produce a silent recording. The
  * worst case is a dropped or kept line in a transcript, which is visible,
@@ -83,112 +103,47 @@ import type { TranscriptSegment } from '@shared/types'
 const MIN_OVERLAP = 0.35
 
 /**
- * How similar the words must be.
+ * How quiet the mic must be during the far end's PAUSES before this recording
+ * is treated as having no near-end speaker at all.
  *
- * A CONFIRMING signal, never the deciding one. Measured on a real bleed-heavy
- * recording, text similarity does not separate the two classes at all: genuine
- * bleed pairs scored as low as 0.14 (ASR mangles the second-hand copy badly
- * enough that few words survive), while a legitimately repeated phrase — one
- * person agreeing with another using the same words — scores 1.0. The ranges
- * overlap completely, so a similarity threshold alone would both miss most
- * bleed and delete real speech.
+ * ## What the old constants were measuring
  *
- * It earns its place only alongside the energy test below, where it guards the
- * one case energy cannot see: the user genuinely speaking, quietly, while the
- * other side talks.
+ * This was -20 dB and compared raw per-segment levels, justified by a recording
+ * where every mic segment sat 27-36 dB below the system track. The observation
+ * was real; the inference was not. That gap is mostly the difference between a
+ * pre-mixer digital tap and an acoustic microphone, and it is there whether or
+ * not any bleed is.
+ *
+ * Measured on the W1 fixture — a HEADSET recording, no acoustic path, no bleed
+ * possible — the raw gap is -20.5 dB, already past the old threshold, so the
+ * detector deleted the user's only line. The comment here used to assume
+ * "speaking into your own laptop mic is normally LOUDER than the meeting audio";
+ * against a tap running near full scale it is not, and that assumption is what
+ * deleted the speech.
+ *
+ * ## Why this is now a per-recording gate
+ *
+ * A per-segment level cannot answer this question at all. Both classes — the
+ * user speaking quietly, and room echo of the far end — are quiet mic audio
+ * overlapping loud system audio, and they are not separable on level within the
+ * segment. `measureTrackGains` asks the question that IS separable, over the
+ * whole recording: how loud does the mic get while the system track is silent?
+ *
+ *   real near-end speech (headset)   -25.7 dB
+ *   simulated bleed, -15 dB path     -45.6 dB
+ *   simulated bleed, -27 dB path     -51.3 dB
+ *   simulated bleed, -36 dB path     -51.7 dB
+ *
+ * -35 dB sits about 10 dB clear of both sides. The bleed side saturates near
+ * -51 dB — past roughly -20 dB of acoustic attenuation the mic hears its own
+ * noise floor rather than the room — so the margin does not shrink as the
+ * acoustic path gets worse.
+ *
+ * Above this line there is a person at the microphone, and their quiet moments
+ * must not be deleted on a level argument. Below it there is not, and mic
+ * segments overlapping far-end speech have no other source to have come from.
  */
-const MIN_SIMILARITY = 0.45
-
-/**
- * How far below the system track a mic segment must sit to look like bleed.
- *
- * This is the signal that actually works, and it is a measurement rather than a
- * guess. On a recording made through laptop speakers, every mic segment sat
- * between 27 and 36 dB below the system track over the same window — the mic's
- * PEAK was quieter than the system track's average. Sound that has travelled
- * out of a speaker, across a room and into a microphone arrives dramatically
- * attenuated, and that is a physical property rather than a linguistic one.
- *
- * 20 dB is a hundredfold difference in power and sits well clear of the -27 dB
- * worst case observed, leaving margin for a louder room or a closer mic while
- * staying far from the range where the user's own voice lives — speaking into
- * your own laptop mic is normally LOUDER than the meeting audio, not thirty
- * decibels quieter.
- */
-const BLEED_LEVEL_DB = -20
-
-/**
- * Below this, the level gap decides on its own.
- *
- * A microphone hearing a person in front of it does not sit 25 dB under the
- * meeting audio; that gap is what an acoustic path across a room does, and
- * nothing else in normal use produces it. Requiring a text match as well would
- * be strictly worse, because ASR mangles the second-hand copy badly enough that
- * real bleed often scores near zero on similarity — measured at 0.06 on one
- * segment of a recording where every single "me" line was bleed.
- *
- * The band between this and BLEED_LEVEL_DB is the genuinely ambiguous one: a
- * quiet user, or a distant one. There, and only there, the words have to agree
- * too.
- */
-const CONCLUSIVE_LEVEL_DB = -25
-
-/**
- * Words too common to count as evidence.
- *
- * Two unrelated English sentences share "the", "and", "you" constantly, which
- * inflates similarity between segments that have nothing to do with each other.
- * Removing them makes the score reflect content rather than grammar. Kept
- * short — an aggressive stop list would strip short utterances down to nothing
- * and make them unmatchable.
- */
-const STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'but', 'so', 'to', 'of', 'in', 'on', 'at',
-  'is', 'it', 'that', 'this', 'i', 'you', 'we', 'they', 'be', 'was', 'are',
-  'for', 'with', 'as', 'do', 'have', 'has', 'yeah', 'yes', 'no', 'ok', 'okay',
-])
-
-/**
- * Words, lowercased, without punctuation or stopwords.
- *
- * Numbers are kept as digits and words alike: "507" and "407" differ, which is
- * exactly the kind of ASR damage that should REDUCE similarity, and losing them
- * would make two readings of the same figure look identical.
- */
-function tokens(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length > 0 && !STOPWORDS.has(w))
-}
-
-/**
- * Dice coefficient over token multisets: 2·|shared| / (|a| + |b|).
- *
- * Multiset rather than set so a repeated word counts as many times as it
- * appears in both — "bit of a bit of a bit" is a real ASR failure mode on
- * bleed, and set semantics would score it against anything.
- */
-export function similarity(a: string, b: string): number {
-  const ta = tokens(a)
-  const tb = tokens(b)
-  if (ta.length === 0 || tb.length === 0) return 0
-
-  const counts = new Map<string, number>()
-  for (const w of ta) counts.set(w, (counts.get(w) ?? 0) + 1)
-
-  let shared = 0
-  for (const w of tb) {
-    const left = counts.get(w) ?? 0
-    if (left > 0) {
-      shared++
-      counts.set(w, left - 1)
-    }
-  }
-
-  return (2 * shared) / (ta.length + tb.length)
-}
+const NEAR_END_PRESENT_DB = -35
 
 /** Fraction of the SHORTER segment that lies inside the other. */
 function overlapRatio(a: TranscriptSegment, b: TranscriptSegment): number {
@@ -205,21 +160,34 @@ export interface BleedResult {
   segments: TranscriptSegment[]
   /** How many "me" segments were dropped as bleed. */
   removed: number
-  /** Median mic-minus-system level across overlapping segments, for the log. */
-  medianLevelDb: number
+  /**
+   * The gate value this verdict was reached on, echoed back for the log.
+   *
+   * Worth recording on every run: it is the one number that explains a wrong
+   * verdict in either direction, and it is unrecoverable once `discardAudio`
+   * removes the tracks.
+   */
+  nearEndDb: number
+  /**
+   * Whether the recording was judged to have a person at the microphone.
+   *
+   * Reported separately from `removed` because the two differ in exactly the
+   * case worth seeing in a log: a recording with no near-end speaker AND no mic
+   * segments removes nothing, which is not the same as one where the user was
+   * present.
+   */
+  nearEndPresent: boolean
 }
 
 /**
- * Per-segment levels on both tracks, for the same time window.
+ * How loud the mic gets during the far end's pauses, relative to the system
+ * track — `measureTrackGains().micRelativeDb`.
  *
- * Supplied by the caller rather than read here, so this function stays pure and
- * testable against fixtures — the level probe needs two WAVs and the decision
- * logic does not.
+ * Passed in rather than measured here so this function stays pure and testable
+ * against fixtures: the measurement needs two WAVs and the decision logic does
+ * not.
  */
-export interface LevelProbe {
-  /** Mic level minus system level, in dB, over a segment's window. */
-  (segment: TranscriptSegment): number
-}
+export type NearEndLevel = number
 
 /**
  * Drop "me" segments that are the other side's voice coming back through the
@@ -230,13 +198,17 @@ export interface LevelProbe {
  * there is no acoustic path in that direction — so the asymmetry is physical
  * rather than a heuristic.
  *
- * A segment is dropped when ALL THREE hold:
+ * The recording is classified first, then its segments:
  *
- *   1. It overlaps a "them" segment in time. Bleed is simultaneous by physics.
- *   2. The mic is far below the system track over that window. This is the
- *      decisive test — measured at 27-36 dB on a real speaker recording.
- *   3. Either the words match, or the level gap is so extreme that no
- *      near-field speech could produce it.
+ *   1. If the mic ever rises clearly above the system track during the far
+ *      end's pauses, there is a person at that microphone. Nothing is removed.
+ *      A quiet interjection over loud far-end audio is indistinguishable from
+ *      bleed WITHIN the segment, so the only safe reading is the one that keeps
+ *      the user's words.
+ *   2. Otherwise the mic has no near-end source, and a mic segment is dropped
+ *      when it overlaps a "them" segment. Bleed is simultaneous by physics, and
+ *      with no one at the microphone there is nowhere else for overlapping mic
+ *      audio to have come from.
  *
  * The audio is never touched, so this cannot produce a silent recording. The
  * worst outcome is a dropped or kept transcript line — visible, recoverable,
@@ -245,19 +217,36 @@ export interface LevelProbe {
  */
 export function removeSpeakerBleed(
   segments: readonly TranscriptSegment[],
-  level: LevelProbe,
+  nearEndDb: NearEndLevel,
 ): BleedResult {
   const them = segments.filter((s) => s.speaker === 'them')
+  const nearEndPresent = nearEndDb > NEAR_END_PRESENT_DB
 
   // Nothing to compare against — headphone users, one-sided recordings, and
   // meetings where the mic track is absent all take this path, and it costs
   // nothing.
   if (them.length === 0) {
-    return { segments: [...segments], removed: 0, medianLevelDb: 0 }
+    return { segments: [...segments], removed: 0, nearEndDb, nearEndPresent }
+  }
+
+  /*
+   * There is a near-end speaker, so nothing on the mic track is presumed bleed.
+   *
+   * This is the branch that fixes the deleted-speech report, and it is
+   * deliberately absolute rather than a per-segment softening: with a person at
+   * the mic, the quiet mic segments are exactly the ones most likely to be
+   * their genuine speech over loud far-end audio, and the level test has
+   * already been shown unable to tell those apart.
+   *
+   * `measureTrackGains` reports 0 when it could not calibrate — too little
+   * far-end silence to measure in — which lands here and leaves the transcript
+   * untouched. Failing open is the right default for a destructive filter.
+   */
+  if (nearEndPresent) {
+    return { segments: [...segments], removed: 0, nearEndDb, nearEndPresent }
   }
 
   let removed = 0
-  const observed: number[] = []
 
   const kept = segments.filter((seg) => {
     if (seg.speaker !== 'me') return true
@@ -271,33 +260,19 @@ export function removeSpeakerBleed(
 
     if (overlapping.length === 0) return true
 
-    const gap = level(seg)
-    if (Number.isFinite(gap)) observed.push(gap)
-
-    // Loud enough to be someone speaking into this microphone. Whatever the
-    // words say, near-field speech is not bleed — and this is the branch that
-    // protects the user agreeing with a phrase the other side just used, which
-    // text similarity scores as a perfect match.
-    if (gap > BLEED_LEVEL_DB) return true
-
-    // Far enough down that the level settles it on its own.
-    if (gap <= CONCLUSIVE_LEVEL_DB) {
-      removed++
-      return false
-    }
-
-    // The ambiguous band: quiet, but not impossibly so. The words have to
-    // agree as well before anything is discarded.
-    if (overlapping.some((other) => similarity(seg.text, other.text) >= MIN_SIMILARITY)) {
-      removed++
-      return false
-    }
-
-    return true
+    /*
+     * No near-end source in this recording, and this segment sits on top of
+     * far-end speech, so there is nowhere else for it to have come from.
+     *
+     * A text match is confirming evidence but is deliberately NOT required:
+     * real bleed often scores near zero on similarity — measured at 0.06 on a
+     * recording where every "me" line was bleed — because ASR mangles the
+     * second-hand copy. Demanding a match would keep most of what this exists
+     * to remove.
+     */
+    removed++
+    return false
   })
 
-  observed.sort((a, b) => a - b)
-  const medianLevelDb = observed.length > 0 ? (observed[observed.length >> 1] ?? 0) : 0
-
-  return { segments: kept, removed, medianLevelDb }
+  return { segments: kept, removed, nearEndDb, nearEndPresent }
 }
