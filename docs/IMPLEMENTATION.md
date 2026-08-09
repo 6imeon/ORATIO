@@ -956,6 +956,97 @@ reason — it is a menu-bar app and closing the window must not end a meeting.
 
 ---
 
+## Phase 11 — Exclude apps from the system track
+
+The system tap is all-or-nothing today, so a meeting recorded while music is
+playing has the music in the "them" track — and therefore in the transcript,
+via whatever ASR makes of song lyrics. AudioTee already solves this and we have
+never used it: `--exclude-processes` and `--include-processes` are both in the
+shipped 0.0.7 binary's own `--help`.
+
+**Exclusion, not inclusion**, and the reason is the failure mode rather than
+taste. A PID must be *currently producing audio* to translate to an audio object
+ID, and AudioTee **exits** when translation fails — its README says so and
+`Utils.swift` throws. An include-list therefore breaks in exactly the moment
+that matters: you hit record in a Zoom waiting room before anyone has spoken,
+translation fails, and the recording dies at the start of the meeting. With an
+exclusion list, an app that is silent or absent simply is not excluded, and a
+meeting app nobody anticipated is still captured. Exclusion fails toward
+recording too much; inclusion fails toward recording nothing.
+
+- [ ] `excludedBundleIds: string[]` in `Settings`, defaulting to Spotify and Music
+- [ ] Resolve bundle IDs → PIDs **at spawn time**, immediately before `MacAudioCapture.start()`
+- [ ] Drop any PID that does not translate; **never fail the recording over an exclusion**
+- [ ] Pass `--exclude-processes` only when the resolved list is non-empty — an empty flag is not the same as an absent one
+- [ ] Settings UI: list of apps to ignore, added from the apps currently playing audio
+- [ ] Keep the flag out of `AudioCapture` — it is a `MacAudioCapture` detail, and Windows WASAPI expresses this differently
+
+### Verification
+
+- [ ] Record with Spotify playing and Spotify excluded → system track contains the meeting only
+- [ ] Record with Spotify excluded but **not running** → recording starts normally, no error
+- [ ] Record with an excluded app that is running but silent → starts normally (the translation-failure path)
+- [ ] Confirm the spawned argv by logging it, not by inferring it from the audio
+
+---
+
+## Phase 12 — Notice that a meeting started
+
+Enumerating audio processes needs **no TCC permission at all** — verified on
+this machine with a Core Audio probe: 24 process objects, each with bundle ID,
+PID and live `IsRunningInput`/`IsRunningOutput`, and **no prompt appeared**.
+Only creating a *tap* needs the grant. `IsRunningInput` keyed by bundle ID
+answers "is an app using the microphone right now", which distinguishes "Zoom is
+open" from "you are in a call", and covers Meet and Slack huddles too because it
+does not care what the app is.
+
+**Suggest, never auto-start.** A local-first recorder that begins capturing on
+its own is the behaviour that makes this category of app untrustworthy, and the
+asymmetry is stark: a missed prompt costs one click, an unwanted auto-record
+puts a private conversation on disk. No detection is reliable enough to be
+trusted unsupervised — which is why the commercial tools pay the Screen
+Recording tax and still get it wrong.
+
+- [ ] Poll `kAudioHardwarePropertyProcessObjectList` ~1 s — change listeners for these properties reportedly do not fire (Apple Forums 770348)
+- [ ] Read `BundleID`, `PID`, `IsRunningInput`, `IsRunningOutput` per object
+- [ ] Fall back to a process name when `BundleID` is empty — plain executables have none (confirmed: `afplay` reports an empty bundle ID while audible)
+- [ ] Match known meeting apps: Zoom, **both** Teams bundle IDs (`com.microsoft.teams` and `com.microsoft.teams2`), Slack, browsers
+- [ ] `CptHost` as the high-confidence Zoom in-call signal
+- [ ] Tray suggestion when a match starts using the mic and we are not recording; dismissible, and silent for the rest of that call once dismissed
+- [ ] Setting to turn the suggestion off entirely
+
+**Do not** read window titles or request Accessibility. `kCGWindowName` has been
+gated behind Screen Recording since 10.15 — not 15 — Sequoia re-prompts for that
+grant periodically, and it is the reason MacWhisper's meeting detection is
+absent from its App Store build. It would re-introduce precisely the permission
+we avoided by choosing AudioTee over `desktopCapturer`.
+
+### Verification
+
+- [ ] Probe reports the correct bundle ID while a call is live, and stops when it ends
+- [ ] Confirm **no permission prompt** is triggered by enumeration alone
+- [ ] Chrome resolves sensibly despite appearing as multiple audio objects (main + helpers — observed as three)
+- [ ] Suggestion does not fire while Oratio is already recording
+
+---
+
+## Phase 13 — Per-app picker *(only if 11 and 12 leave a gap)*
+
+Deliberately conditional. Once music is excluded and the tray offers to record
+when a call starts, a picker is a list of choices in front of a decision that
+has already been made correctly. Build it only if real use shows otherwise.
+
+If it is built, scope it honestly: macOS taps audio **processes, not windows**.
+Two Chrome tabs are one audio object, and a Meet call in one of nine tabs cannot
+be isolated. A "choose a window" UI would promise a granularity the API does not
+have.
+
+- [ ] Decide from real use whether this is still wanted
+- [ ] If built: picker lists *processes currently producing audio*, never windows
+- [ ] Inherits the include-list translation-failure risk — needs a retry loop or a fallback to exclusion
+
+---
+
 ## Open questions that block phases
 
 | # | Question | Blocks | Resolve by |
@@ -981,6 +1072,7 @@ Not in v1, and each has a reason:
 - **Editable transcripts** (Meetily #377) — conflicts with "transcript.json is machine output"; needs a provenance design.
 - **Templates** (Grain/Granola-style, section = a prompt) — our five sections are fixed for now.
 - **Diarization within the `them` track** — the two-track split already solves the common case.
+- **Per-app capture as a fix for speaker bleed** — it is not one, and the two problems look similar enough to be worth writing down. A tap runs inside the HAL, upstream of the DAC, so it has no influence on what physically reaches the microphone. Per-app capture fixes *digital* bleed (Spotify landing in the "them" track), which is a routing problem; *acoustic* bleed — their voice out of your speakers and back into your mic — is unaffected no matter how few processes are tapped. That is what `bleed.ts` is for.
 - **Windows** — everything platform-specific is behind `AudioCapture`. WASAPI process loopback is *better* than macOS (single-process capture), and sherpa ships Windows binaries. Remember the AVX2 pre-flight check (ARCHITECTURE §4.6).
 
 ---
@@ -990,6 +1082,14 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. **All ten phases are done.** The build order is
-complete; what remains before a release is packaging and signing, plus the two
-open questions below that need a real Ollama and real long meetings to settle.
+without its predecessor. **Phases 1–10 are done** — that is the whole of the
+original build order, and what remains before a release is packaging and
+signing, plus the two open questions below that need a real Ollama and real
+long meetings to settle.
+
+Phases 11–13 came out of using the thing. They are **not** on the release path:
+11 and 12 are independent of each other and of everything above, and 13 exists
+mainly to be cancelled once 11 and 12 have shipped. Both rest on capability that
+is already in the tree — AudioTee 0.0.7 ships the process-filter flags, and
+audio-process enumeration needs no permission — so neither adds a dependency or
+a prompt.
