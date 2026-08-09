@@ -55,14 +55,16 @@ export function RecordButton({ onStopped }: Props): React.JSX.Element {
       <button
         onClick={() => void toggle()}
         disabled={busy}
-        className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+        className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium transition-colors disabled:opacity-50 ${
           recording
-            ? 'bg-red-500 text-white hover:bg-red-600'
-            : 'bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900'
+            ? 'bg-(--color-live) text-white'
+            : 'bg-(--color-ink) text-(--color-surface) hover:opacity-90'
         }`}
       >
         <span
-          className={`size-2 rounded-full ${recording ? 'animate-pulse bg-white' : 'bg-red-500'}`}
+          className={`size-2 rounded-full ${
+            recording ? 'animate-pulse bg-white' : 'bg-(--color-live)'
+          }`}
         />
         {recording ? `Recording ${format(state?.elapsedSeconds ?? 0)}` : 'Start recording'}
       </button>
@@ -76,18 +78,18 @@ export function RecordButton({ onStopped }: Props): React.JSX.Element {
          * when the transcript lands, possibly on a later launch. Discarding
          * after the fact is a separate, explicit action on the meeting itself.
          */
-        <label className="flex items-center gap-2 px-1 text-xs text-neutral-500">
+        <label className="flex items-center gap-2 px-1 text-[11px] text-(--color-ink-dim)">
           <input
             type="checkbox"
             checked={discardAudio}
             onChange={(e) => setDiscardAudio(e.target.checked)}
-            className="size-3.5 accent-neutral-900 dark:accent-neutral-100"
+            className="size-3.5 accent-(--color-me)"
           />
           Delete audio after transcribing
         </label>
       )}
 
-      {error && <p className="px-1 text-xs text-red-500">{error}</p>}
+      {error && <p className="px-1 text-xs text-(--color-live)">{error}</p>}
     </div>
   )
 }
@@ -100,23 +102,33 @@ export function RecordButton({ onStopped }: Props): React.JSX.Element {
 function Levels({ mic, system }: { mic: number; system: number }): React.JSX.Element {
   return (
     <div className="flex flex-col gap-1 px-1">
-      <Meter label="You" level={mic} />
-      <Meter label="Them" level={system} />
+      {/* Same two accents as the transcript, so a track reads the same colour
+          from the meter that captured it to the turn it produced. */}
+      <Meter label="You" level={mic} tone="var(--color-me)" />
+      <Meter label="Them" level={system} tone="var(--color-them)" />
     </div>
   )
 }
 
-function Meter({ label, level }: { label: string; level: number }): React.JSX.Element {
+function Meter({
+  label,
+  level,
+  tone,
+}: {
+  label: string
+  level: number
+  tone: string
+}): React.JSX.Element {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-8 shrink-0 text-[10px] text-neutral-400">{label}</span>
-      <div className="h-1 flex-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+      <span className="w-8 shrink-0 text-[10px] text-(--color-ink-faint)">{label}</span>
+      <div className="h-1 flex-1 overflow-hidden rounded-full bg-(--color-raised)">
         <div
-          className="h-full rounded-full bg-green-500 transition-[width] duration-75"
+          className="h-full rounded-full transition-[width] duration-75"
           // Amplitude is linear but hearing is not: a normal speaking voice
           // peaks around 0.1 and would barely move a linear bar. The cube root
           // approximates a perceptual scale closely enough for a level meter.
-          style={{ width: `${Math.min(100, Math.cbrt(level) * 100)}%` }}
+          style={{ width: `${Math.min(100, Math.cbrt(level) * 100)}%`, background: tone }}
         />
       </div>
     </div>

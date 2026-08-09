@@ -405,6 +405,13 @@ Rows are **variable height** (text wraps unpredictably), which is the hard case.
    rows this may be sufficient on its own.
 2. **If not, TanStack Virtual** with dynamic measurement.
 
+**[verified — measured in phase 6]** Option 1 was sufficient and option 2 was
+not needed. A 4 000-segment transcript merges to 1 334 turns, every one of them
+in the DOM, and 40 forced scroll-and-layout passes over the whole list complete
+in **1 ms**. Merging to turns does most of the work before the rendering
+strategy matters at all. ⌘F, select-all and scroll anchoring therefore all
+still work, which is the outcome this ordering existed to protect.
+
 Two things must survive whatever we choose, because they are the features that
 beat Granola: **selecting and copying across the whole transcript**, and
 **⌘F finding text that is scrolled out of view**. A virtualization approach that
@@ -701,7 +708,7 @@ isn't cancellable. Applies to session selection and tab switching.
 
 | # | Question | Risk if wrong |
 |---|---|---|
-| 1 | Is `content-visibility: auto` enough for a 2-hour transcript, or is TanStack Virtual required? | Determines whether ⌘F and select-all keep working |
+| ~~1~~ | ~~Is `content-visibility: auto` enough for a 2-hour transcript, or is TanStack Virtual required?~~ **Settled in phase 6: `content-visibility` alone is enough.** 4 000 segments merge to 1 334 turns, all in the DOM; 40 forced scroll-and-layout passes over the full list take 1 ms. TanStack Virtual is not needed, so ⌘F, select-all and scroll anchoring all survive | ~~Determines whether ⌘F and select-all keep working~~ |
 | 2 | First main-window open latency on an M-series Mac | Decides pre-warm vs on-demand; ~50 MB permanent cost |
 | 3 | Do we render a full waveform, or only the timeline rail? | Waveform needs a cached peak summary per session |
 | 4 | Live transcript view during recording — only for streaming models (Moonshine) | Non-streaming models show nothing until stop; the UI must not look broken |

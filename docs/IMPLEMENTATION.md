@@ -413,7 +413,7 @@ to be safe to call twice.
 
 ---
 
-## Phase 6 — The UI: layout J
+## Phase 6 — The UI: layout J ✅
 
 *Ends in:* the app looks like the decision in UI.md §3a.
 
@@ -423,24 +423,106 @@ consequences of wiring the controller):**
 - [x] `tray.ts:73` — re-render on `powerMonitor` resume so the counter doesn't freeze on screen after sleep
 
 **Then build J:**
-- [ ] Notes take full width; drawer at the bottom
-- [ ] **Three drawer states** — closed / half / full. Drag to resize, double-click to cycle, `⌘T` toggles
-- [ ] Handle always visible; shows turn count closed, active timestamp while playing
-- [ ] Persist drawer state per session
-- [ ] Opening must not steal focus from the notes editor
-- [ ] **Targeted reveal:** opening scrolls to the relevant turn (from search, from click-to-play)
-- [ ] **Merge segments into speaker turns**, one timestamp per turn (W3C guidance, UI.md §4) — not one row per ASR segment
-- [ ] Paragraphs with hanging indents, not chat bubbles
-- [ ] Date grouping in the sidebar (Today / Yesterday / This week)
-- [ ] Session status visible per row — `pending` / `transcribing` already exist in `SessionStatus`
-- [ ] Dark mode designed, not inverted (three duplicate Meetily issues; Granola's "Windows 95" palette)
+- [x] Notes take full width; drawer at the bottom
+- [x] **Three drawer states** — closed / half / full. Drag to resize, double-click to cycle, `⌘T` toggles
+- [x] Handle always visible; shows turn count closed, active timestamp while playing
+- [x] Persist drawer state per session
+- [x] Opening must not steal focus from the notes editor
+- [x] **Targeted reveal:** opening scrolls to the relevant turn (from search, from click-to-play)
+- [x] **Merge segments into speaker turns**, one timestamp per turn (W3C guidance, UI.md §4) — not one row per ASR segment
+- [x] Paragraphs with hanging indents, not chat bubbles
+- [x] Date grouping in the sidebar (Today / Yesterday / This week)
+- [x] Session status visible per row — `pending` / `transcribing` already exist in `SessionStatus`
+- [x] Dark mode designed, not inverted (three duplicate Meetily issues; Granola's "Windows 95" palette)
 
 **Performance, in this order:**
-- [ ] Try `content-visibility: auto` + `contain-intrinsic-size` **first** — it preserves ⌘F, selection, and scroll anchoring, which are our advantages over Granola
-- [ ] Only if that fails: TanStack Virtual with dynamic measurement
-- [ ] Active-line highlight mutates `className` on a ref — **never inserts or removes nodes** (Vibe shipped four `removeChild` crashes from exactly this; `timeupdate` fires up to 66×/s)
-- [ ] Binary search for the active turn, not a linear scan
-- [ ] Act on `mousedown` where uncancellable (~50 ms, measured by VS Code)
+- [x] Try `content-visibility: auto` + `contain-intrinsic-size` **first** — it preserves ⌘F, selection, and scroll anchoring, which are our advantages over Granola
+- [x] Only if that fails: TanStack Virtual with dynamic measurement — **not needed, see below**
+- [x] Active-line highlight mutates `className` on a ref — **never inserts or removes nodes** (Vibe shipped four `removeChild` crashes from exactly this; `timeupdate` fires up to 66×/s)
+- [x] Binary search for the active turn, not a linear scan
+- [x] Act on `mousedown` where uncancellable (~50 ms, measured by VS Code)
+
+### What the build actually found
+
+**Open question #1 is answered: `content-visibility` is enough, and TanStack
+Virtual is not needed.** A 4 000-segment transcript merges to 1 334 turns, all
+of them in the DOM, and 40 forced scroll-and-layout passes over the full list
+complete in **1 ms**. That keeps ⌘F, select-all across the whole transcript, and
+scroll anchoring — three of the four things we do that Granola doesn't — which
+every JS windowing library would have cost us. The second bullet above is ticked
+as *deliberately not done*.
+
+**Turn merging is the bigger win, and it comes first.** 4 000 ASR segments
+become 1 334 turns before any rendering strategy is chosen — a 3× cut in row
+count from following the W3C paragraph guidance, not from optimisation. The
+merge is memoised once per transcript in `MeetingView` and passed down, because
+the reveal path and the render path both need turns and merging twice per
+transcript is exactly the avoidable work UI.md §4 warns about.
+
+**A same-speaker gap has to split a turn.** Merging purely on speaker identity
+turns ten minutes of one person talking into a single unscrollable paragraph
+with one timestamp at the top, which destroys the seek granularity
+click-to-play depends on. `TURN_GAP_MS = 6 s` splits on a real pause — longer
+than the breath pauses inside a sentence, shorter than a genuine stop.
+
+**Two real bugs, both found by the harness rather than by eye:**
+
+1. **Every click on the drawer handle was a zero-distance drag.** `pointerdown`
+   started a resize unconditionally, so the `pointerup` that ended it snapped
+   and *persisted* a state — which then raced the double-click's cycle and
+   silently overwrote it. The handle is both a button and a drag surface, so
+   the two gestures now have to be told apart by movement: no drag begins until
+   the pointer has moved `DRAG_THRESHOLD_PX`.
+2. **Double-click did nothing across most of the handle.** The inner label
+   button called `stopPropagation()`, so the cycle gesture only worked on the
+   few pixels of bare handle either side of it — while the label is the obvious
+   thing to aim at. The button no longer stops propagation, and ignores
+   `detail > 1` so the second click of a double-click doesn't also toggle.
+
+**Focus preservation is one line, and it is load-bearing.** `preventDefault()`
+on the handle's `mousedown` is what leaves the caret mid-sentence in the notes
+editor while the drawer opens underneath. Without it, opening the drawer to
+check a name costs you your place in the note you were writing — verified by
+asserting `document.activeElement` and the exact `selectionStart` across the
+open.
+
+**Drawer state lives in `localStorage`, not in the vault.** `meta.json` is the
+recording's own record and is read by the transcription queue on a later launch,
+so putting view state there means the queue's input changes when someone drags a
+divider; `Settings` is global and this is per session. "Plain files are the
+source of truth" governs content, and a drawer height is not content.
+
+**The palette is tokens, not `dark:` variants.** A theme spread across fifty
+utility classes cannot be reviewed as a theme, which is how the "gray on gray…
+Windows 95" outcome happens. Both themes are declared as one set of custom
+properties over three states — bare `:root`, `prefers-color-scheme` guarded
+against an explicit light choice, and `[data-theme="dark"]` — so the manual
+override wins in either direction.
+
+### Verification
+
+*43 pure-logic checks and 47 checks in real Electron, all passing.* The DOM half
+runs the actual built renderer in a real `BrowserWindow`, because
+`content-visibility`, the class-mutation highlight path, the theme cascade and
+`localStorage` do not exist anywhere else.
+
+**The Vibe crash class is tested directly.** A `MutationObserver` watches the
+drawer subtree while the highlight is moved 300 times the way `timeupdate`
+would: **zero `childList` mutations**, and the row count is unchanged. The
+highlight only ever adds and removes a class on an already-rendered node.
+
+**The binary search is checked against a linear scan** at ~20 000 probe points
+over 2 000 turns — zero disagreements, including before the first turn, exactly
+on a boundary, in the gaps between turns, and past the end. It averages
+**0.00003 ms** per lookup, against a budget set by `timeupdate` firing 66×/s.
+
+The drawer state machine is exercised as a sequence rather than per-state:
+closed by default → open at half → double-click to full → double-click to closed
+→ `⌘T` reopens **at full, not half** (the last open size is remembered) →
+persisted to `localStorage` → a different session opens closed → returning
+restores it. Date bucketing is checked at the boundaries that actually break:
+00:05 today lands in Today, and on a Monday last Friday is still "This week",
+because a calendar week would be one day long and put it under a month heading.
 
 ---
 
@@ -505,7 +587,7 @@ Prompt and parser are already written and typechecked. This is wiring.
 | 1 | Real inference throughput vs realtime on M-series | Whether streaming partials are viable at all | Measure in phase 2 |
 | 2 | Moonshine's behaviour on silence | Hallucination filter is tuned for Whisper | Measure in phase 2 |
 | 3 | Does sherpa expose `condition_on_previous_text`? | Repeat-loops in long meetings | Check in phase 2 |
-| 4 | Is `content-visibility` enough for a 2-hour transcript? | Whether ⌘F and select-all survive | Test in phase 6 |
+| 4 | ~~Is `content-visibility` enough for a 2-hour transcript?~~ | Whether ⌘F and select-all survive | **Settled in phase 6: yes.** 1 334 turns all in the DOM, 40 scroll+layout passes in 1 ms. No JS virtualization, so ⌘F and select-all survive |
 | 5 | Does AudioTee report mid-stream sample-rate changes? | Silent pitch-shifted garbage | Test in phase 3 |
 | 6 | At what duration does single-pass summarisation degrade? | When chunking becomes necessary | Test in phase 8 |
 
@@ -531,5 +613,5 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phase 5 is done. Phases 6–9 are parallelisable now
-that 4 has landed. Phase 10 gates any release.
+without its predecessor. Phases 5 and 6 are done. Phases 7–9 are parallelisable
+now that 4 has landed. Phase 10 gates any release.

@@ -4,6 +4,76 @@
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --font-mono: 'SF Mono', ui-monospace, monospace;
+
+  /*
+   * The palette. Both themes are designed, not derived — UI.md §8, where the
+   * loudest single signal in Meetily's tracker is three duplicate dark-mode
+   * requests and Granola's palette is described as "gray on gray… Windows 95".
+   *
+   * Inverting a light theme produces exactly that. So the neutrals here carry
+   * a slight blue bias in light and a slight warm bias in dark, which is what
+   * keeps a large text surface from reading as flat grey, and the dark ground
+   * is a raised near-black rather than #000 so vibrancy has something to sit
+   * against.
+   *
+   * Defined as tokens rather than per-component `dark:` variants because a
+   * theme spread across fifty utility classes cannot be reviewed as a theme.
+   */
+  --color-ground: oklch(0.985 0.002 250);
+  --color-surface: oklch(1 0 0);
+  --color-raised: oklch(0.96 0.003 250);
+  --color-line: oklch(0.9 0.004 250);
+  --color-ink: oklch(0.24 0.008 250);
+  --color-ink-dim: oklch(0.52 0.006 250);
+  --color-ink-faint: oklch(0.66 0.005 250);
+
+  /*
+   * One accent per track, and they must stay distinguishable for the ~8% of
+   * men with red-green deficiency: blue vs amber differ in hue *and* in
+   * lightness, so the distinction survives greyscale.
+   */
+  --color-me: oklch(0.55 0.16 255);
+  --color-them: oklch(0.6 0.12 65);
+  --color-live: oklch(0.58 0.2 25);
+}
+
+@layer theme {
+  /*
+   * Three states, not two. An explicit choice stamps data-theme; the default
+   * "system" setting stamps nothing, and then only prefers-color-scheme
+   * separates the two. Tokens are redefined in both places so a manual
+   * override wins in either direction.
+   */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --color-ground: oklch(0.19 0.004 65);
+      --color-surface: oklch(0.22 0.005 65);
+      --color-raised: oklch(0.26 0.006 65);
+      --color-line: oklch(0.32 0.006 65);
+      --color-ink: oklch(0.93 0.004 65);
+      --color-ink-dim: oklch(0.7 0.005 65);
+      --color-ink-faint: oklch(0.56 0.006 65);
+
+      /* Lifted and desaturated: the light-theme accents are illegible on a
+         dark ground, which is the inverted-theme failure in miniature. */
+      --color-me: oklch(0.72 0.13 255);
+      --color-them: oklch(0.78 0.11 70);
+      --color-live: oklch(0.68 0.19 25);
+    }
+  }
+
+  :root[data-theme='dark'] {
+    --color-ground: oklch(0.19 0.004 65);
+    --color-surface: oklch(0.22 0.005 65);
+    --color-raised: oklch(0.26 0.006 65);
+    --color-line: oklch(0.32 0.006 65);
+    --color-ink: oklch(0.93 0.004 65);
+    --color-ink-dim: oklch(0.7 0.005 65);
+    --color-ink-faint: oklch(0.56 0.006 65);
+    --color-me: oklch(0.72 0.13 255);
+    --color-them: oklch(0.78 0.11 70);
+    --color-live: oklch(0.68 0.19 25);
+  }
 }
 
 html,
@@ -18,6 +88,7 @@ body {
   -webkit-font-smoothing: antialiased;
   /* Let the window vibrancy show through. */
   background: transparent;
+  color: var(--color-ink);
   overflow: hidden;
 }
 
@@ -25,4 +96,41 @@ body {
 button,
 nav {
   user-select: none;
+}
+
+/*
+ * Turn rows. `content-visibility: auto` is tried BEFORE any JS virtualization
+ * (UI.md §4, open question #1) because it is the only option that preserves
+ * ⌘F, select-all across the whole transcript, and scroll anchoring — three of
+ * the four things that beat Granola. Every JS windowing library breaks at
+ * least one.
+ *
+ * `contain-intrinsic-size` supplies a placeholder height for skipped subtrees
+ * so the scrollbar doesn't lurch as they render. The 0 pairs with `auto`:
+ * once a turn has been rendered once, its real measured size is remembered
+ * and used instead of the estimate.
+ */
+.turn {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 76px;
+}
+
+/*
+ * The active-turn highlight is applied by mutating this class on a ref'd node
+ * from `timeupdate`, which fires up to 66×/s. It exists as plain CSS rather
+ * than a React-driven prop precisely so that path never touches the DOM tree
+ * — Vibe shipped four separate `removeChild` crashes from doing it the other
+ * way (UI.md §1).
+ */
+.turn-active {
+  background: color-mix(in oklch, var(--color-me) 12%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

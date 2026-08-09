@@ -13,6 +13,81 @@ for what has to land first.
 
 ### Added
 
+- **The meeting view is layout J: full-width notes with a transcript drawer**
+  (`TranscriptDrawer.tsx`, `useDrawerState.ts`). Closed, the window *is* the
+  notebook — the widest writing column available — and the handle is always
+  visible, so the transcript is never hidden the way Granola's is. Three
+  states rather than two: closed, half and full, cycled by double-clicking the
+  handle, dragged to any size in between, and toggled with `⌘T`.
+  - **Opening it does not steal focus from the notes editor.** One
+    `preventDefault()` on the handle's `mousedown` is what leaves the caret
+    mid-sentence while the drawer opens underneath — otherwise checking a name
+    in the transcript costs you your place in the sentence you were writing.
+  - **It reopens where you left it, per session**, and reopening while audio
+    is playing lands on the turn being played rather than at the top of a
+    two-hour transcript. The drawer is a targeted reveal, not a toggle.
+  - `⌘T` returns to the last *open* size, so toggling a full-height drawer
+    twice doesn't silently demote it to half.
+- **The transcript renders speaker turns, not ASR segments.** Consecutive
+  segments from one speaker merge into a paragraph with a single timestamp at
+  the handoff, following W3C's transcript guidance. On a real transcript this
+  turned **4 000 segments into 1 334 turns** — a 3× cut in rows before any
+  rendering strategy is involved, and it reads as prose instead of captions.
+  Paragraphs with hanging indents, not chat bubbles: bubbles halve text
+  density, and Granola's were described as "a one-sided WhatsApp".
+  - A pause longer than six seconds splits a turn even without a speaker
+    change, so ten minutes of one person talking doesn't collapse into one
+    unscrollable block with a single seek point.
+- **A designed dark theme, not an inverted one** — declared once as tokens in
+  `styles.css` rather than scattered `dark:` variants, because a theme spread
+  across fifty utility classes cannot be reviewed as a theme. Neutrals carry a
+  slight blue bias in light and a warm bias in dark; the dark ground is a
+  raised near-black so vibrancy has something to sit against, and both track
+  accents are re-tuned per theme rather than reused. Follows the system by
+  default and honours an explicit override in either direction.
+- **Date grouping and per-row status in the sidebar** — Today / Yesterday /
+  This week / This month, then month-and-year headings. "This week" is a
+  rolling seven days, not the calendar week, or on a Monday last Friday's
+  meeting files under a month heading. A session that is queued, transcribing
+  or failed says so; a ready one stays quiet.
+
+### Performance
+
+- **A 1 334-turn transcript stays entirely in the DOM.** `content-visibility:
+  auto` with `contain-intrinsic-size` was tried before any JS virtualization,
+  and proved sufficient: 40 forced scroll-and-layout passes over the full list
+  take **1 ms**. TanStack Virtual was therefore not needed, which is the point
+  — every windowing library breaks ⌘F, select-all across the whole transcript,
+  or scroll anchoring, and those are three of the four things we do that
+  Granola doesn't.
+- **The active-turn highlight only mutates a class on an existing node.** It
+  never inserts or removes DOM nodes, because that is the bug Vibe shipped
+  four separate `removeChild` crashes from, and `timeupdate` fires up to 66
+  times a second. Verified with a `MutationObserver`: 300 highlight moves
+  produce **zero** `childList` mutations.
+- **The active turn is found by binary search**, not a linear scan — averaging
+  0.00003 ms per lookup over 2 000 turns, and checked against a linear scan at
+  ~20 000 probe points with no disagreements.
+- **Session selection and transcript clicks act on `mousedown`**, not
+  `mouseup`, which VS Code measured as ~50 ms of perceived latency on any
+  control whose action isn't cancellable.
+
+### Fixed
+
+- **Every click on the drawer handle was a zero-distance drag.** `pointerdown`
+  began a resize unconditionally, so the `pointerup` that ended it snapped and
+  persisted a drawer state — silently overwriting the double-click that was
+  meant to cycle it. A drag now only begins once the pointer has actually
+  moved.
+- **Double-click did nothing across most of the drawer handle.** The label
+  button swallowed the event, so the cycle gesture only worked on the few
+  pixels of bare handle either side of the most obvious thing to aim at.
+- **Switching sessions could overwrite the next session's notes with an empty
+  string**, when the debounced autosave fired against freshly-mounted empty
+  state before the load resolved. Saves are now gated on the load completing,
+  and an out-of-order load is discarded rather than shown under the wrong
+  meeting's title.
+
 - **Search index moved into its own process**
   (`src/main/storage/worker/`, fronted by `IndexClient`). better-sqlite3 is
   synchronous by design, so every query blocked the thread that also draws the
