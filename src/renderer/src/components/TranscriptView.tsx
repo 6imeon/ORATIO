@@ -300,7 +300,7 @@ export function TranscriptView({
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
         {urls && !hasAudio && (
           <p className="mb-2 text-xs text-(--color-ink-faint)">
-            Audio was discarded for this meeting. The transcript is all that was kept.
+            Audio was deleted after transcribing. The transcript is what was kept.
           </p>
         )}
 

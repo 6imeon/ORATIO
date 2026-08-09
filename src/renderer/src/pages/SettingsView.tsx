@@ -124,11 +124,19 @@ export function SettingsView({
                   onChange={(v) => void update({ removeSpeakerBleed: v })}
                   hint="Without headphones your microphone also hears the other side, and those words get transcribed as yours. This drops them by comparing the two tracks — it only removes mic audio that is far quieter than the meeting audio at the same moment."
                 />
-                <Toggle
-                  label="Delete audio after transcribing"
-                  checked={settings.discardAudioByDefault}
-                  onChange={(v) => void update({ discardAudioByDefault: v })}
-                  hint="The default for new meetings; each one can still be changed before you record. Keeping audio is what lets you click a line of transcript and hear it."
+                <SegmentedControl
+                  label="Keep after a meeting"
+                  value={settings.retention}
+                  options={[
+                    { value: 'transcript-only', label: 'Transcript' },
+                    { value: 'audio-and-transcript', label: 'Transcript + audio' },
+                  ]}
+                  onChange={(v) => void update({ retention: v })}
+                  hint={
+                    settings.retention === 'transcript-only'
+                      ? 'Audio is recorded, transcribed on this Mac, then deleted — transcribing needs it, so it cannot be skipped. Notes and summaries are kept. The default for new meetings; each one can be changed before you record.'
+                      : 'Both audio tracks are kept alongside the transcript, which is what lets you click a line and hear it, and re-transcribe later with a better model. The default for new meetings; each one can be changed before you record.'
+                  }
                 />
                 <ExcludedApps
                   bundleIds={settings.excludedBundleIds}

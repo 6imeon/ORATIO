@@ -74,7 +74,7 @@ from. Its failures are unusually well documented.
 |---|---|---|
 | **"There's no scroll bar for you to quickly jump to the beginning of the meeting"** | tldv review **[verified]** | §4: persistent scrollbar + timeline rail. |
 | **No transcript search.** "There's no built-in way to search through a transcript directly… not as fast or precise as a true search feature" | Zapier **[verified]** | §6: ⌘F in-transcript, ⌘K across all. |
-| **No audio, ever.** "Does not record or save audio or video at any point… there's no way to access audio from your meetings" | Granola docs **[verified]** | §4: click any line, hear it. We keep the WAVs. |
+| **No audio, ever** — audio is "deleted from our systems and any third-party services", so there is no way to hear what was actually said | Granola docs **[verified]** | §4: click any line, hear it — for anyone who turns audio retention on. Default is transcript-only (see [PRIVACY.md §4.2](PRIVACY.md)), but it is *our* choice to give away, not a limit of the design. |
 | **No export.** Copy-paste only; scored 66/100, "wants to keep that data locked into their ecosystem" | meetingnotes.com **[verified]** | Plain files *are* the storage. Nothing to export. |
 | **Requires "Screen & System Audio Recording" permission** | Granola docs **[verified]** | AudioTee needs only System Audio Recording. No screen indicator. |
 | Chat history lost on re-entering a meeting | tldv **[verified]** | Notes are files, written through. |

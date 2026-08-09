@@ -27,7 +27,7 @@ export function RecordButton({ onStopped }: Props): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    void window.oratio.settings.get().then((s) => setDiscardAudio(s.discardAudioByDefault))
+    void window.oratio.settings.get().then((s) => setDiscardAudio(s.retention === 'transcript-only'))
   }, [])
 
   const recording = state?.active ?? false
@@ -129,15 +129,20 @@ export function RecordButton({ onStopped }: Props): React.JSX.Element {
          * it can be honoured: the choice is written into meta.json and read
          * when the transcript lands, possibly on a later launch. Discarding
          * after the fact is a separate, explicit action on the meeting itself.
+         *
+         * Phrased as what is KEPT, inverting the `discardAudio` state it
+         * drives. With the default now transcript-only, a "delete the audio"
+         * checkbox would sit pre-ticked on every recording — which reads as
+         * this meeting being singled out, when it is just the default.
          */
         <label className="flex items-center gap-2 px-1 text-[11px] text-(--color-ink-dim)">
           <input
             type="checkbox"
-            checked={discardAudio}
-            onChange={(e) => setDiscardAudio(e.target.checked)}
+            checked={!discardAudio}
+            onChange={(e) => setDiscardAudio(!e.target.checked)}
             className="size-3.5 accent-(--color-me)"
           />
-          Delete audio after transcribing
+          Keep the audio for this meeting
         </label>
       )}
 

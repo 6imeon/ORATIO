@@ -789,30 +789,58 @@ and on *neither* of the `them` turns spoken through them, a mute still open at
 no turns at all, and the sub-second filter. Then confirmed on screen against a
 real 26-second recording with ranges injected into its `meta.json`.
 
-### P3 — Retention mode, defaulting to transcript-only
+### P3 — Retention mode, defaulting to transcript-only ✅
 
-Design in §4.2. Ships **after** P4, so a correction can still be checked against
-the audio while that feature is being built. Mostly a rename and a default flip
-— the retention machinery already exists and is correct.
+Design in §4.2. Shipped **after** P4, so a correction could still be checked
+against the audio while that feature was built. As predicted, mostly a rename
+and a default flip — the retention machinery already existed and was correct.
 
 **Settings**
-- [ ] `retention: 'transcript-only' | 'audio-and-transcript'` in `Settings`, replacing the negated `discardAudioByDefault` boolean
-- [ ] Default is `'transcript-only'`, with the reasoning in the comment beside it
-- [ ] Migration: an existing stored `discardAudioByDefault` maps to the new field, so **no existing user is silently switched** — and the old key is not left to rot in `settings.json`
-- [ ] Settings UI is a two-option choice naming what is *kept*, not a negated checkbox
-- [ ] Per-recording override still works and reads correctly against the new default
+- [x] `retention: 'transcript-only' | 'audio-and-transcript'` in `Settings`, replacing the negated `discardAudioByDefault` boolean
+- [x] Default is `'transcript-only'`, with the reasoning in the comment beside it
+- [x] Migration: an existing stored `discardAudioByDefault` maps to the new field, so **no existing user is silently switched** — and the old key is not left to rot in `settings.json`
+- [x] Settings UI is a two-option choice naming what is *kept*, not a negated checkbox
+- [x] Per-recording override still works and reads correctly against the new default
 
 **Deletion must be permanent**
-- [ ] Discarded audio is `rm`'d, **never** `shell.trashItem` — a "delete the audio" setting that leaves a copy in the Trash is worse than not offering it. Currently true (`discardSessionAudio` uses `fs.rm`, and nothing in the codebase calls `trashItem`); this box is to keep it true
-- [ ] Wording stays "deleted", **not** "securely erased" — the unlink cannot promise erasure on an SSD, and `discardSessionAudio` already documents why. Do not add an overwrite pass to make the stronger claim
-- [ ] Audio is gone within one queue cycle of transcription succeeding, and a crash mid-delete retries on next launch (existing behaviour — verify, don't assume)
-- [ ] `audioDiscardedAt` is written only *after* the files are gone, so the flag cannot claim a deletion that did not happen (existing invariant)
+- [x] Discarded audio is `rm`'d, **never** `shell.trashItem` — verified again: zero occurrences of `trashItem` in `src/`, and `shell` is imported only for `openExternal`, `showItemInFolder` and `openPath`
+- [x] Wording stays "deleted", **not** "securely erased". No overwrite pass was added
+- [x] Audio is gone within one queue cycle of transcription succeeding, and a crash mid-delete retries on next launch (verified, not assumed — `rm` uses `force`, so the sweep is idempotent)
+- [x] `audioDiscardedAt` is written only *after* the files are gone (verified by source order and on real files)
 
 **Consequences**
-- [ ] [UI.md §77](UI.md) comparison table rewritten — it currently claims keeping the WAVs as a differentiator, **and** quotes wording Granola no longer uses
-- [ ] Copy says audio is deleted **after** transcription, never that it is not recorded — VAD and ASR both read the WAVs, so "never written" would be false
-- [ ] A transcript-only session still searches, summarises, exports, and shows no broken playback affordance
-- [ ] A transcript-only session that fails transcription does **not** lose its audio — deletion is gated on success, and this is the case where the audio is most needed
+- [x] [UI.md §77](UI.md) comparison table rewritten — and its stale Granola quote replaced with the current "deleted from our systems and any third-party services" wording
+- [x] Copy says audio is deleted **after** transcription, never that it is not recorded
+- [x] A transcript-only session still searches, summarises, exports, and shows no broken playback affordance
+- [x] A transcript-only session that fails transcription does **not** lose its audio
+
+**The migration was the whole phase.** Everything else was a rename. The danger
+is specific and one-directional: the default *flipped*, so `loadSettings`'
+existing `{ ...defaultSettings(), ...saved }` merge — which is correct for every
+key that has ever been added — would have handed the new `transcript-only`
+default to every existing user, because their file has no `retention` key to
+override it with. That is not a cosmetic bug. It silently starts deleting audio
+from people who explicitly chose to keep it, and unlike almost every other
+mistake in this codebase it is unrecoverable: a transcript can be re-read, a
+deleted WAV cannot be un-deleted.
+
+`migrateRetention` therefore runs as a *later spread* over the merge rather than
+inside it, mapping the old boolean whenever `retention` is absent, and the write
+is forced immediately (following the provider-migration precedent) rather than
+waiting for the user to change something — otherwise the old key sits in
+`settings.json` describing a field nothing reads. Checked against the four file
+shapes that exist in the wild, then against a real pre-P3 `settings.json`:
+`[settings] retention migrated { from: false, to: 'audio-and-transcript' }`, the
+old key gone, `retention` written, and every other key byte-identical.
+
+**The per-recording checkbox had to invert.** It read "Delete audio after
+transcribing", which was the deviation from the old default and is now the
+default itself — so it would have sat pre-ticked on every recording, reading as
+though *this* meeting had been singled out. It now says "Keep the audio for this
+meeting" and negates the `discardAudio` it drives. `meta.json` still stores the
+boolean, not the mode: it records what was decided for that session, and must
+not be re-interpreted against a setting the user may have changed before the
+transcript lands, possibly on a later launch.
 
 ### P4 — Editable transcripts
 

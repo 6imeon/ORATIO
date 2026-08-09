@@ -32,7 +32,12 @@ export function defaultSettings(): Settings {
     // laptop, and the failure it fixes — being transcribed saying what the
     // other person said — is one users cannot diagnose for themselves.
     removeSpeakerBleed: true,
-    discardAudioByDefault: false,
+    // Conservative by default: a meeting recording is the most sensitive file
+    // most people will ever have a tool create for them without asking, and
+    // keeping the audio is the choice that is hard to undo — a transcript can
+    // be re-read, a deleted WAV cannot be un-deleted. Anyone who wants
+    // click-a-line-to-hear-it opts in, once, and keeps it.
+    retention: 'transcript-only',
     /**
      * Music players, because they are the common case and the one users would
      * never think to configure: you put music on, forget it, and the transcript
@@ -70,8 +75,16 @@ export async function loadSettings(): Promise<Settings> {
     const raw = await readFile(settingsPath(), 'utf8')
     // Merge over defaults so a settings file written by an older version
     // never leaves new keys undefined.
-    const saved = JSON.parse(raw) as Partial<Settings>
-    settings = { ...defaultSettings(), ...saved, providers: mergeProviders(saved.providers) }
+    const saved = JSON.parse(raw) as Partial<Settings> & LegacySettings
+    settings = {
+      ...defaultSettings(),
+      ...saved,
+      providers: mergeProviders(saved.providers),
+      ...migrateRetention(saved),
+    }
+    // The old key must not survive the merge, or settings.json keeps describing
+    // a field nothing reads.
+    delete (settings as Partial<LegacySettings>).discardAudioByDefault
 
     /**
      * Persist a provider-list migration immediately.
@@ -88,8 +101,18 @@ export async function loadSettings(): Promise<Settings> {
      */
     const before = (saved.providers ?? []).map((p) => p?.id).join(',')
     const after = settings.providers.map((p) => p.id).join(',')
-    if (before !== after) {
-      log.info('[settings] provider list migrated', { before, after })
+    // Forces a write whenever the old key was present, even if `retention` was
+    // too and no mapping was needed — the stale key still has to leave the file.
+    const retentionMigrated = saved.discardAudioByDefault !== undefined
+    if (retentionMigrated) {
+      log.info('[settings] retention migrated', {
+        from: saved.discardAudioByDefault,
+        to: settings.retention,
+        mapped: saved.retention === undefined,
+      })
+    }
+    if (before !== after || retentionMigrated) {
+      if (before !== after) log.info('[settings] provider list migrated', { before, after })
       // Deliberately not awaited: this is housekeeping, and a failure to write
       // must not stop the app loading. The in-memory value is already correct.
       void saveSettings(settings).catch((err) =>
@@ -116,6 +139,36 @@ export async function loadSettings(): Promise<Settings> {
   }
 
   return settings
+}
+
+/** Settings keys this version no longer writes, kept only so they can be migrated. */
+interface LegacySettings {
+  /** Superseded by `retention`. @see migrateRetention */
+  discardAudioByDefault?: boolean
+}
+
+/**
+ * Map a pre-`retention` settings file onto the new field.
+ *
+ * This exists because the default *flipped*. `retention` defaults to
+ * `transcript-only` where `discardAudioByDefault` defaulted to `false` (keep),
+ * so the plain spread merge in `loadSettings` would hand every existing user
+ * the new default and start deleting audio they had never agreed to lose. The
+ * old value wins wherever there is one, and the new default applies only to
+ * someone who has genuinely never had this setting.
+ *
+ * Returns a partial to spread rather than mutating, so it composes with the
+ * merge instead of racing it. An empty object means "nothing to migrate" and
+ * leaves whatever the merge decided — which for a file that already has
+ * `retention` is that saved value, and for a fresh install is the default.
+ */
+function migrateRetention(saved: Partial<Settings> & LegacySettings): Partial<Settings> {
+  // Already migrated, or written by a version that knows the new field.
+  if (saved.retention) return {}
+  if (saved.discardAudioByDefault === undefined) return {}
+  return {
+    retention: saved.discardAudioByDefault ? 'transcript-only' : 'audio-and-transcript',
+  }
 }
 
 /**

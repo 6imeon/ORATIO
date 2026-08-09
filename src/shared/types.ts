@@ -293,6 +293,21 @@ export interface ProviderConfig {
  */
 export type ThemePreference = 'system' | 'light' | 'dark'
 
+/**
+ * What a recording keeps after it has been transcribed.
+ *
+ * Note what neither mode does: skip recording audio in the first place. VAD and
+ * ASR both read the WAVs, so audio is always written and `transcript-only`
+ * deletes it at the earliest moment it is no longer needed. Copy must say
+ * "deleted after transcribing", never "not recorded" — see
+ * `discardSessionAudio`.
+ */
+export type RetentionMode =
+  /** Transcript, notes and summary. The audio is deleted once transcription succeeds. */
+  | 'transcript-only'
+  /** Everything, including both WAVs — needed for click-a-line-to-hear-it and re-transcription. */
+  | 'audio-and-transcript'
+
 /** A running app, offered as a candidate for the system-track exclusion list. */
 export interface RunningApp {
   bundleId: string
@@ -318,13 +333,18 @@ export interface Settings {
    */
   removeSpeakerBleed: boolean
   /**
-   * Default for a new session's `discardAudio`. Off — audio is kept, which is
-   * what makes click-a-line-to-hear-it possible and what lets a garbled name
-   * be recovered from the source. The per-session toggle overrides it either
-   * way, so someone who mostly records sensitive meetings can flip the
-   * default rather than remembering each time.
+   * What a new recording keeps once it has been transcribed.
+   *
+   * Named for what is *kept* rather than what is discarded. The predecessor was
+   * `discardAudioByDefault`, a negated flag that had to be read twice to answer
+   * the only question anyone actually asks. A mode also leaves room for a third
+   * option later without another migration.
+   *
+   * The per-session toggle overrides it either way, so someone who mostly
+   * records one kind of meeting can flip the default rather than remembering
+   * each time.
    */
-  discardAudioByDefault: boolean
+  retention: RetentionMode
   /**
    * Apps whose audio is kept out of the system track, by bundle ID.
    *

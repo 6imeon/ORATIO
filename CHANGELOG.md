@@ -11,6 +11,30 @@ for what has to land first.
 
 ## [Unreleased]
 
+### Changed
+
+- **New meetings now keep the transcript and delete the audio, by default.**
+  Settings → Recording → **Keep after a meeting** is a two-way choice:
+  *Transcript*, or *Transcript + audio*. Individual meetings can still go the
+  other way — tick **Keep the audio for this meeting** before you record.
+
+  To be exact about what "transcript only" means, because the distinction
+  matters: the audio *is* recorded. It has to be — transcribing reads the
+  audio files, and it all happens on your Mac. They are deleted as soon as the
+  transcript exists, and never before, so a meeting that fails to transcribe
+  keeps its audio rather than losing everything.
+
+  Deleting means an ordinary delete, not the Trash — there is no copy left
+  behind. It is not a secure wipe, and Oratio will not claim otherwise: on an
+  SSD the underlying blocks are out of any app's reach.
+
+  Keeping audio is what makes click-a-line-to-hear-it work, and what lets you
+  re-transcribe later with a better model. That is a real thing to give up, so
+  it stayed one setting away rather than being removed.
+
+  **If you have used Oratio before, nothing changes for you.** Your existing
+  choice carries over as-is — the new default applies only to fresh installs.
+
 ### Added
 
 - **You can now fix what the transcriber got wrong.** Hover any line and click

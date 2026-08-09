@@ -268,7 +268,10 @@ export class RecordingController extends EventEmitter {
     this.#sessionId = basename(dir)
     this.#startedAt = startedAt
     this.#title = opts.title?.trim() || defaultTitle(startedAt)
-    this.#discardAudio = opts.discardAudio ?? settings.discardAudioByDefault
+    // meta.json keeps the boolean rather than the mode: it records what was
+    // decided for THIS session, and must not be re-interpreted against a
+    // setting the user may have changed before the transcript lands.
+    this.#discardAudio = opts.discardAudio ?? settings.retention === 'transcript-only'
     this.#deadTracks.clear()
     this.#micPeak = 0
     this.#systemPeak = 0
