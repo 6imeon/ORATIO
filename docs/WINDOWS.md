@@ -310,7 +310,9 @@ verifiable on macOS.
 - [x] `grep` shows no `MacAudioCapture` import outside `src/main/audio/` and `index.ts`
 - [x] macOS DMG still builds, sherpa still loads from the packaged bundle, and the installer is **still 146 MB** (see the size trap below)
 - [x] App boots clean on macOS through the refactored interface — worker ready, IPC registered, vault resolved, index reconciled
-- [ ] **Record on macOS, mic and system tracks unchanged.** Still outstanding: it needs a click-through of the mic permission prompt and a real meeting, which cannot be driven headlessly. Everything above it is automated and passing, so this is the one item carried into W2.
+- [x] **Record on macOS, mic and system tracks unchanged.** Verified with a real 24 s two-track recording after the refactor. Both tracks 16 kHz mono 16-bit; mic 23.39 s (peak 0.070), system 24.40 s (peak 0.452); RIFF sizes exact against actual file bytes on both. Neither track digitally silent, so `pushMicPcm` delivers audio correctly through the *interface* rather than the concrete class — the specific thing W1 changed. Duration derived from sample counts (374290/16000 = 23.39 s), and the mic's 662 ms late start was recorded in `meta.json` rather than assumed away. Full pipeline ran end to end: VAD → ASR → transcript.
+
+  **The two tracks are provably unmixed:** envelope correlation between them is **r = 0.087**, and only 1.35% of aligned samples are identical. Mixing, or system-audio bleed into the mic, would push both far higher. This is the invariant the whole two-track design exists to protect, and it is now measured rather than assumed.
 
 ### What W1 turned up
 
@@ -422,6 +424,15 @@ it — and that masked case is the more common one in the field. That call has
 ### Verification
 
 - [ ] Record speech on both tracks simultaneously; confirm the mic track does **not** have system audio subtracted — the AEC failure is silent and plausible, so this must be checked deliberately
+
+  **Use the W1 measurement as the baseline.** A correctly separated pair
+  measured **r = 0.087** envelope correlation on macOS (W1 verification above),
+  with 1.35% identical aligned samples. That gives this check a number to
+  compare against instead of a judgement call — which matters here more than
+  anywhere, because AEC produces *plausible* audio rather than silence, so
+  `LIVENESS_CHECK_MS` cannot catch it and listening to the file will not
+  obviously reveal it. Correlation well above that baseline, or a mic track
+  that goes quiet exactly when system audio is loud, means AEC is still on.
 - [ ] Denial path reaches the right Settings page
 - [ ] Mic hot-plug mid-recording produces a discontinuity, not a dead track
 
