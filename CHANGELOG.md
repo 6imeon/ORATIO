@@ -13,6 +13,27 @@ for what has to land first.
 
 ### Added
 
+- **The menu bar carries the whole app.** With no Dock icon, the tray is the
+  only always-visible surface, so it now does real work: a native `Menu` (never
+  a popover — AppKit draws it instantly, where a popover needs a live renderer
+  and 350–450 MB), the five most recent meetings, a Settings item, and a global
+  `⌃⇧R` for start/stop.
+  - **Three states, not two.** Idle, recording and *transcribing* — the third
+    is the one that says "still working" after a meeting ends, and without it a
+    long ASR job looks like the app has gone idle and eaten the recording. It
+    counts the backlog rather than showing a boolean, so a queue several deep
+    after a crash says so.
+  - **Clicking a recent meeting opens the window at that meeting**, including
+    from a standing start with no window open.
+  - **Every tray action has a second path.** macOS hides menu-bar extras when
+    the bar is crowded, so on a notched MacBook the icon can simply not be
+    there: start/stop has a global shortcut and Settings is reachable from the
+    sidebar and `⌘,`.
+- **Settings is reachable and tells the truth** (`SettingsView.tsx`) — vault
+  path, active model, VAD, audio retention and summarisation provider, read
+  from the real settings file. Editing arrives with the model picker in a later
+  phase; a menu item that opened a panel of placeholder text would be worse
+  than one that was absent.
 - **The meeting view is layout J: full-width notes with a transcript drawer**
   (`TranscriptDrawer.tsx`, `useDrawerState.ts`). Closed, the window *is* the
   notebook — the widest writing column available — and the handle is always
@@ -74,6 +95,17 @@ for what has to land first.
 
 ### Fixed
 
+- **The menu-bar icon did not exist, so the tray was invisible.**
+  `resources/` was empty and `nativeImage.createFromPath` returns an *empty
+  image* rather than throwing on a missing file. With no Dock icon and the
+  window closed, the app had no visible surface at all. The asset now ships at
+  1× and 2×, and an empty image is reported as an error instead of silently
+  producing nothing.
+- **The icon path broke whenever the bundler regrouped the code.** It was
+  resolved from `__dirname`, but rollup decides which chunk a module lands in —
+  `tray.ts` is emitted into `out/main/chunks/`, a level deeper than expected —
+  so the walk pointed somewhere else entirely. Same bug the ASR worker hit;
+  both now resolve from `app.getAppPath()`.
 - **Every click on the drawer handle was a zero-distance drag.** `pointerdown`
   began a resize unconditionally, so the `pointerup` that ended it snapped and
   persisted a drawer state — silently overwriting the double-click that was

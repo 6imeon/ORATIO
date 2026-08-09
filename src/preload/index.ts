@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, EVENTS } from '@shared/ipc'
 import { AUDIO_PORT_CHANNEL, type AudioPortMessage } from '@shared/audioPort'
 import type {
+  NavTarget,
   PermissionState,
   TranscriptionProgress,
   StartRecordingOptions,
@@ -169,6 +170,16 @@ const api = {
   },
 
   /**
+   * Where this window was asked to go before it was listening.
+   *
+   * A window created by a tray click is not subscribed to `navigate` yet at
+   * the moment main fires it, so main parks the target and the renderer
+   * collects it here on mount. Null when the window was opened by hand.
+   * Collecting clears it, so a reload does not jump back.
+   */
+  pendingNav: (): Promise<NavTarget | null> => ipcRenderer.invoke(IPC.NAV_PENDING),
+
+  /**
    * main→renderer events. Each returns its own unsubscribe function; React
    * effects must call it on cleanup or listeners accumulate across renders.
    */
@@ -190,6 +201,8 @@ const api = {
     modelProgress: (cb: (p: ModelState) => void) => subscribe(EVENTS.MODEL_PROGRESS, cb),
     sessionChanged: (cb: (id: string) => void) => subscribe(EVENTS.SESSION_CHANGED, cb),
     aiToken: (cb: (token: string) => void) => subscribe(EVENTS.AI_TOKEN, cb),
+    /** The tray asking this window to show a session or the Settings pane. */
+    navigate: (cb: (t: NavTarget) => void) => subscribe(EVENTS.NAVIGATE, cb),
   },
 }
 

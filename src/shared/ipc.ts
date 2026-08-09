@@ -65,6 +65,17 @@ export const IPC = {
   // Permissions
   PERMISSION_CHECK: 'permission:check',
   PERMISSION_REQUEST_MIC: 'permission:requestMic',
+
+  /**
+   * Where the window should go, asked once on mount.
+   *
+   * The tray can ask for a session or for Settings while no window exists, and
+   * the window it then creates is not listening yet — an `EVENTS.NAVIGATE`
+   * push at that moment lands nowhere. So main holds the request and the
+   * renderer collects it when it is ready. Resolves null in the normal case
+   * where the window was opened by hand.
+   */
+  NAV_PENDING: 'nav:pending',
 } as const
 
 /** main → renderer pushes. */
@@ -86,7 +97,18 @@ export const EVENTS = {
   MODEL_PROGRESS: 'evt:model:progress',
   SESSION_CHANGED: 'evt:session:changed',
   AI_TOKEN: 'evt:ai:token',
+  /** Main telling a live window to show a session or the Settings pane. */
+  NAVIGATE: 'evt:navigate',
 } as const
+
+/**
+ * A request to show something specific.
+ *
+ * Deliberately a small union rather than a URL: this app has two destinations
+ * and a router would be scaffolding for one of them. `session` carries an id;
+ * `settings` carries nothing.
+ */
+export type NavTarget = { kind: 'session'; sessionId: string } | { kind: 'settings' }
 
 /** Options for RECORDING_START. Everything is optional; defaults come from Settings. */
 export interface StartRecordingOptions {

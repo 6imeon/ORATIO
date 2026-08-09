@@ -207,9 +207,17 @@ trade for a menu with five items.
 └────────────────────────────┘
 ```
 
-Two gaps in the current implementation this closes: [tray.ts](src/main/tray.ts)
+~~Two gaps in the current implementation this closes: [tray.ts](src/main/tray.ts)
 has **no Settings item at all**, and `toggle()` at
-[tray.ts:56-60](src/main/tray.ts#L56-L60) is a stub that only re-renders.
+[tray.ts:56-60](src/main/tray.ts#L56-L60) is a stub that only re-renders.~~
+
+**[closed in phase 7]** Both are done: the menu now carries Settings (⌘,) and
+`toggle()` drives the real controller. A third gap this section did not
+anticipate turned out to be the serious one — **the icon asset did not exist
+at all.** `resources/` was empty, and `nativeImage.createFromPath` returns an
+empty image rather than throwing, so the menu-bar item was invisible. For an
+`LSUIElement` app that is not a cosmetic bug: with no Dock icon and no window,
+it left the app with no visible surface whatsoever.
 
 **[reported]** Also call `tray.setIgnoreDoubleClickEvents(true)` — without it,
 a fast double-click can swallow click events entirely.
@@ -229,6 +237,12 @@ fire. `Date.now()` deltas survive suspend, so the *display* is correct today —
 but the interval stops firing while asleep, so the counter freezes on screen.
 The tray should re-render on `powerMonitor` `resume`, and the authoritative
 duration must come from sample count.
+
+**[done — phase 4 for the redraw, phase 7 for the rest]** The tray re-renders
+on `powerMonitor` `resume`, elapsed stays a `Date.now()` delta rather than an
+accumulated tick count, and the interval is `unref`'d so it cannot hold the
+process awake between ticks. The authoritative duration is still the sample
+count in `meta.json`; the menu-bar counter is explicitly the approximate one.
 
 The same bug exists more seriously in the renderer:
 [RecordButton.tsx:12-16](src/renderer/src/components/RecordButton.tsx#L12-L16)

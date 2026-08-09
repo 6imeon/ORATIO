@@ -25,8 +25,8 @@ rule is: **every phase ends in something you can run and judge.**
 | System audio (AudioTee) | Built; **byte format corrected to Int16** (phase 3) |
 | SQLite FTS5 index | **Moved to its own `utilityProcess`; rebuild-by-rescan verified** (phase 5) |
 | AI providers + prompt + section parser | Built and typechecked; never called |
-| Tray | Wired to the controller; no Settings item yet |
-| Renderer (5 components) | Renders; wrong layout (timer drift fixed in phase 4) |
+| Tray | **Built and verified** — three states, Recent, Settings, global shortcut; the icon asset was missing entirely (phase 7) |
+| Renderer | **Layout J built and verified** (phase 6); Settings is read-only until phase 9 |
 | Mic capture | **Built and verified** — worklet → port → WAV, lossless (phase 3) |
 | Model download manager | **Built and verified against the network** (phase 1) |
 | ASR engine | **Built and verified** — 3 config families (phase 2) |
@@ -34,7 +34,8 @@ rule is: **every phase ends in something you can run and judge.**
 | **Index worker** | **Built and verified** — tray-freeze measured, DB deleted and recovered (phase 5) |
 
 **1 of the request/response IPC channels has no handler** — `AI_SUMMARIZE`,
-which phase 8 wires. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
+which phase 8 wires. `NAV_PENDING` was added in phase 7 and is handled in
+`index.ts` rather than `registerIpc`, because it reads window state. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
 and `SESSION_GET` were the phase 4 gap and are now handled. (The `EVENTS`
 channels are main→renderer pushes and have no handler by design.)
 
@@ -526,17 +527,84 @@ because a calendar week would be one day long and put it under a month heading.
 
 ---
 
-## Phase 7 — Tray, properly
+## Phase 7 — Tray, properly ✅
 
 *Ends in:* the app is usable without ever opening the window.
 
-- [ ] Native `Menu` — **not** a popover window (UI.md §2)
-- [ ] Three states: idle / recording / transcribing. The third is easy to forget and it is the one that says "still working"
-- [ ] Recent sessions in the menu → open the window at that session
-- [ ] **Settings item** — currently missing entirely
-- [ ] Template icon; opacity for state (35% idle, per Apple's disabled convention)
+- [x] Native `Menu` — **not** a popover window (UI.md §2)
+- [x] Three states: idle / recording / transcribing. The third is easy to forget and it is the one that says "still working"
+- [x] Recent sessions in the menu → open the window at that session
+- [x] **Settings item** — currently missing entirely
+- [x] Template icon; opacity for state (35% idle, per Apple's disabled convention)
 - [x] `setIgnoreDoubleClickEvents(true)` — done in phase 4: without it a double-click fires the menu item twice, and the second fire *stops* the recording the first just started
-- [ ] Global shortcut for start/stop, since macOS hides menu-bar extras when the bar is crowded
+- [x] Global shortcut for start/stop, since macOS hides menu-bar extras when the bar is crowded
+
+### What the build actually found
+
+**The tray icon did not exist.** `resources/` was an empty directory and
+`tray.ts` pointed at `resources/trayTemplate.png`. `nativeImage.createFromPath`
+does not throw on a missing file — it returns an *empty image*, and an empty
+tray image on macOS is an invisible menu-bar item. With `LSUIElement: true` and
+no Dock icon, that means the app had **no visible surface at all** once the
+window was closed. It fails exactly the way §"macOS gotchas" warns: a success
+return code and nothing on screen. The asset is now generated as a pure-alpha
+16 pt circle in an 18 pt box at 1× and 2×, and `createTray` logs an explicit
+error when the image comes back empty rather than leaving it silent.
+
+**That error check immediately caught a second bug — and it is the same bug
+phase 2 hit.** The icon path was resolved from `__dirname`, but rollup decides
+which chunk a module lands in: `tray.ts` is currently emitted into
+`out/main/chunks/`, one level deeper than `out/main/`, exactly as
+`WorkerEngine` was when it could not find `asr.cjs`. The relative walk silently
+changes meaning whenever the bundler regroups the code, so it breaks on a
+*build* change rather than a code change. It now resolves from
+`app.getAppPath()`, the same fix phase 2 landed on.
+
+> **This is now a repeat offender, so treat it as a rule: never resolve a
+> bundled asset or worker path from `__dirname` in main.** Rollup owns that
+> directory and will move it. Use `app.getAppPath()`. Phase 2 lost time to it
+> pointing at a worker; phase 7 lost time to it pointing at an icon, where the
+> failure mode was an *invisible menu-bar item* rather than an exception.
+
+**Electron's `Tray` is write-only.** It has `setImage`, `setContextMenu` and
+`setToolTip` with no getters for any of them, so what the menu bar is actually
+showing cannot be read back from the object — the menu is the entire
+deliverable of this phase and would only ever have been inspectable by eye.
+The menu is therefore built by a pure exported `menuTemplate()` that the tray
+applies and the verification asserts against, and `currentMenu()` returns it
+already bound to the live deps, so clicking a row in a test runs the very
+`openSession` closure `index.ts` was wired with.
+
+**The deep link needed a handshake, not a push.** A Recent click with no window
+open creates the window *and* has to land on that session — but the renderer is
+not subscribed to `EVENTS.NAVIGATE` yet at the moment main fires it, so the
+push lands nowhere. Main parks the target and the renderer collects it on mount
+via `NAV_PENDING`, clearing it on collection so a reload does not jump back.
+Both orderings are verified against the real UI.
+
+**The tray's third state comes from the queue, not the controller.**
+`RecordingController` knows nothing about transcription, so `index.ts` drives
+`setTranscribing()` from `queue.on('progress')` using `queued` plus the job in
+flight. Recording outranks transcribing when both are true.
+
+### Verification
+
+*59 checks against the tray in a real Electron main process, and 16 against the
+real renderer, all passing.* The tray half stubs only `RecordingController`;
+the renderer half boots the **actual `index.ts`** — real `registerIpc`, real
+vault, real tray — and drives navigation by clicking rows of the real menu.
+
+The icon assertions are quantitative rather than "an image exists": idle mean
+alpha 26.2 against recording 75.2, a ratio of **0.348**, which is Apple's 35%
+disabled convention. Both images are checked to still be template images after
+the fade, since losing that flag would break light/dark menu bars silently.
+
+The cold deep-link path is the one that matters and is tested as a sequence: no
+window at rest → click a Recent row → a window is created → it opens **at that
+session** rather than the empty state → a reload does **not** re-navigate.
+Degradation is tested too: an unreadable vault drops the Recent section but
+leaves start/stop working, and a first run with no sessions shows no empty
+"Recent" heading.
 
 ---
 
@@ -613,5 +681,5 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phases 5 and 6 are done. Phases 7–9 are parallelisable
+without its predecessor. Phases 5, 6 and 7 are done. Phases 8 and 9 are parallelisable
 now that 4 has landed. Phase 10 gates any release.

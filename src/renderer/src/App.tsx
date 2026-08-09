@@ -3,12 +3,18 @@ import type { Session } from '@shared/types'
 import { SessionList } from './components/SessionList'
 import { RecordButton } from './components/RecordButton'
 import { MeetingView } from './pages/MeetingView'
+import { SettingsView } from './pages/SettingsView'
 import { useMicCapture } from './hooks/useMicCapture'
+import { useNavigation } from './hooks/useNavigation'
 
 export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
   const [micError, setMicError] = useState<string | null>(null)
+
+  // Selection is navigation, not local UI state: the tray can point this
+  // window at a session that was recorded with nothing open.
+  const nav = useNavigation()
+  const selected = nav.sessionId
 
   // Mounted at the root, not inside the record button: main decides when to
   // record, and this window's mic must keep running whatever the UI is showing.
@@ -54,11 +60,27 @@ export function App(): React.JSX.Element {
             </p>
           )}
         </div>
-        <SessionList sessions={sessions} selected={selected} onSelect={setSelected} />
+        <SessionList sessions={sessions} selected={selected} onSelect={nav.select} />
+
+        {/*
+          The in-window path to Settings. The tray has the same item, but the
+          tray can be hidden when the menu bar is crowded (Apple HIG), and the
+          rule is that no action is reachable only from there.
+        */}
+        <button
+          type="button"
+          onClick={nav.openSettings}
+          className="flex shrink-0 items-center gap-2 border-t border-(--color-line) px-4 py-2.5 text-left text-xs text-(--color-ink-dim) hover:bg-(--color-raised) hover:text-(--color-ink)"
+        >
+          Settings
+          <span className="ml-auto font-mono text-[11px] text-(--color-ink-faint)">⌘,</span>
+        </button>
       </aside>
 
       <main className="min-w-0 flex-1 overflow-hidden">
-        {current ? (
+        {nav.settingsOpen ? (
+          <SettingsView onClose={nav.closeSettings} />
+        ) : current ? (
           // Keyed so switching sessions remounts: the drawer, the notes buffer
           // and the <audio> elements are all per-session state, and carrying
           // them across would show one meeting's audio under another's title.

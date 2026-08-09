@@ -1,8 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, ipcMain } from 'electron'
 import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
-import { EVENTS } from '@shared/ipc'
+import { EVENTS, IPC, type NavTarget, type TranscriptionProgress } from '@shared/ipc'
 import { loadSettings } from './storage/settings'
 import { IndexClient, type IndexableSession } from './storage/IndexClient'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
@@ -13,7 +13,7 @@ import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
 import { readMeta, readTranscript, listSessions, sessionDir } from './storage/vault'
-import { createTray, setRecordingState } from './tray'
+import { createTray, setRecordingState, setTranscribing } from './tray'
 
 log.initialize()
 log.transports.file.level = 'info'
@@ -161,6 +161,40 @@ export function showMainWindow(): void {
   }
 }
 
+/**
+ * Where a freshly-created window should go once it is listening.
+ *
+ * The tray can ask for a session with no window open, and the window that then
+ * gets created is not subscribed yet — a push at that moment would land
+ * nowhere. Main parks the request here and the renderer collects it on mount
+ * via `NAV_PENDING`, which turns a race into a handshake.
+ *
+ * Only ever one: a second click before the window is up replaces the first,
+ * which is what the user asked for most recently.
+ */
+let pendingNav: NavTarget | null = null
+
+/**
+ * Show the window, pointed at something specific.
+ *
+ * A live window is told directly. A window that does not exist yet gets the
+ * target parked for it — see `pendingNav`. Either way the window is shown and
+ * focused, because every path here is a user asking to see something.
+ */
+function navigate(target: NavTarget): void {
+  const live = mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()
+
+  // Parked unconditionally, not just when there is no window. The renderer
+  // clears it on collection, and a window that is live but mid-reload has the
+  // same problem a missing one does.
+  pendingNav = target
+  showMainWindow()
+
+  if (live) {
+    mainWindow?.webContents.send(EVENTS.NAVIGATE, target)
+  }
+}
+
 void app.whenReady().then(async () => {
   const settings = await loadSettings()
   await mkdir(settings.vaultPath, { recursive: true })
@@ -227,13 +261,42 @@ void app.whenReady().then(async () => {
   // port nobody is writing to.
   registerMicPort(capture)
 
-  const trayDeps = { recording, showMainWindow }
-  createTray(trayDeps)
+  // Registered here rather than in registerIpc because it reads `pendingNav`,
+  // which is window state and lives in this module.
+  ipcMain.handle(IPC.NAV_PENDING, () => {
+    const target = pendingNav
+    // Collected exactly once: leaving it set would send the window back to the
+    // same session on every subsequent reload.
+    pendingNav = null
+    return target
+  })
+
+  createTray({
+    recording,
+    showMainWindow,
+    openSession: (sessionId) => navigate({ kind: 'session', sessionId }),
+    openSettings: () => navigate({ kind: 'settings' }),
+    // Read on menu open rather than cached: the vault is the source of truth
+    // and a session can appear from a recording started in another window.
+    // listSessions already sorts newest-first, and the tray takes the head.
+    recentSessions: async () => listSessions((await loadSettings()).vaultPath),
+  })
 
   // The tray shows a live elapsed counter, so it needs to know when recording
   // starts and stops regardless of who asked — window, tray, or shortcut.
-  recording.on('started', () => setRecordingState(true, trayDeps))
-  recording.on('stopped', () => setRecordingState(false, trayDeps))
+  recording.on('started', () => setRecordingState(true))
+  recording.on('stopped', () => setRecordingState(false))
+
+  // The tray's third state. "Transcribing" is the one users forget exists and
+  // the one that says the app is still working after a meeting ends — without
+  // it, a long ASR job looks like the app has gone idle and eaten the
+  // recording.
+  queue.on('progress', (p: TranscriptionProgress) => {
+    // `queued` counts jobs still waiting; the one being worked on is not in it.
+    const active = p.stage === 'done' || p.stage === 'failed' ? 0 : 1
+    setTranscribing(p.queued + active)
+    broadcast(EVENTS.TRANSCRIPTION_PROGRESS, p)
+  })
 
   // A session becomes searchable when its transcript lands, not when it is
   // recorded. The index is derived, so failing to index is not fatal — it can
@@ -244,8 +307,6 @@ void app.whenReady().then(async () => {
     )
     broadcast(EVENTS.SESSION_CHANGED, sessionId)
   })
-
-  queue.on('progress', (p) => broadcast(EVENTS.TRANSCRIPTION_PROGRESS, p))
 
   async function indexSession(sessionId: string): Promise<void> {
     const current = await loadSettings()
