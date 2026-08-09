@@ -68,6 +68,11 @@ interface Deps {
    * or stop when the toggle moves rather than at the next launch.
    */
   onSettingsChanged?: (settings: Settings) => void
+  /**
+   * Tell every window a session changed on disk. Main owns this because only
+   * main knows how many windows there are — see `broadcast` in index.ts.
+   */
+  sessionChanged: (sessionId: string) => void
 }
 
 /**
@@ -161,14 +166,38 @@ export function registerIpc(deps: Deps): void {
   })
 
   ipcMain.handle(IPC.SESSION_DELETE, async (_e, sessionId: string) => {
+    /**
+     * Refuse to delete the session being recorded right now.
+     *
+     * The capture pipeline holds open WAV writers into that directory, so the
+     * delete would either lose the race (the writers recreate the files and
+     * half a meeting survives as an orphan with no meta.json) or win it and
+     * leave the controller writing into a removed path for the rest of the
+     * meeting. Neither is recoverable, and both look to the user like the app
+     * corrupted a recording rather than like a request that was refused.
+     *
+     * Stopping first is one click, and the UI does not offer the control
+     * here — this guard is for the tray, a second window, and anything that
+     * reaches the channel while the sidebar is stale.
+     */
+    if (deps.recording.state().sessionId === sessionId) {
+      throw new Error('Stop the recording before deleting it.')
+    }
+
     const settings = await loadSettings()
     await deleteSession(sessionDir(settings.vaultPath, sessionId))
+
     // Best-effort: the files are already gone, which is what the user asked
     // for. A failure here leaves a stale hit that the next launch's reconcile
     // clears, so it must not turn a successful delete into an error.
     await deps.searchIndex
       .removeSession(sessionId)
       .catch((err) => log.warn('[ipc] could not unindex deleted session', sessionId, err))
+
+    // Every window, not just the one that asked. The deleting window could
+    // refresh itself, but a second window showing the same vault would keep a
+    // dead session in its sidebar until something else happened to change.
+    deps.sessionChanged(sessionId)
   })
 
   ipcMain.handle(IPC.SESSION_REVEAL, async (_e, sessionId: string) => {
@@ -271,6 +300,10 @@ export function registerIpc(deps: Deps): void {
 
     await discardSessionAudio(dir)
     log.info(`[ipc] audio discarded for ${sessionId}`)
+
+    // The transport bar is still showing a player for files that no longer
+    // exist until something re-reads the session.
+    deps.sessionChanged(sessionId)
   })
 
   /**

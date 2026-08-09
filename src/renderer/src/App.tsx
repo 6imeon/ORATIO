@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session, ThemePreference } from '@shared/types'
+import { DeleteSessionDialog } from './components/DeleteSessionDialog'
 import { SessionList } from './components/SessionList'
 import { RecordButton } from './components/RecordButton'
 import { MeetingView } from './pages/MeetingView'
@@ -13,6 +14,15 @@ import { useTheme } from './hooks/useTheme'
 export function App(): React.JSX.Element {
   const [sessions, setSessions] = useState<Session[]>([])
   const [micError, setMicError] = useState<string | null>(null)
+
+  /**
+   * The session the sidebar's trash button is asking about.
+   *
+   * Held here rather than in SessionList because a delete started from the
+   * sidebar must be able to move the selection, and because the same dialog
+   * serves the meeting header — one confirmation, two entry points.
+   */
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
 
   // Selection is navigation, not local UI state: the tray can point this
   // window at a session that was recorded with nothing open.
@@ -60,6 +70,37 @@ export function App(): React.JSX.Element {
     [sessions, selected],
   )
 
+  const sidebarDelete = useMemo(
+    () => (pendingDelete ? (sessions.find((s) => s.id === pendingDelete) ?? null) : null),
+    [sessions, pendingDelete],
+  )
+
+  /**
+   * Where the selection goes when the selected meeting is deleted.
+   *
+   * Falling to the empty state would be technically correct and feel like the
+   * app lost its place — you delete one meeting from a list of thirty and the
+   * whole pane empties. Selecting the neighbour keeps you where you were, and
+   * matches what Mail and Notes do. The list is already in display order, so
+   * the neighbour is the next row, or the previous one when the last was
+   * deleted.
+   */
+  const handleDeleted = useCallback(
+    (id: string) => {
+      setPendingDelete(null)
+      if (id === selected) {
+        const i = sessions.findIndex((s) => s.id === id)
+        const next = sessions[i + 1] ?? sessions[i - 1] ?? null
+        nav.select(next?.id ?? null)
+      }
+      // The main-process broadcast refreshes every window including this one,
+      // but doing it here too means the row disappears on the same frame as
+      // the dialog rather than one IPC round-trip later.
+      void refresh()
+    },
+    [selected, sessions, nav, refresh],
+  )
+
   /*
    * Setup replaces the whole window rather than appearing beside it.
    *
@@ -98,7 +139,12 @@ export function App(): React.JSX.Element {
             </p>
           )}
         </div>
-        <SessionList sessions={sessions} selected={selected} onSelect={nav.select} />
+        <SessionList
+          sessions={sessions}
+          selected={selected}
+          onSelect={nav.select}
+          onDelete={setPendingDelete}
+        />
 
         {/*
           The in-window path to Settings. The tray has the same item, but the
@@ -122,11 +168,27 @@ export function App(): React.JSX.Element {
           // Keyed so switching sessions remounts: the drawer, the notes buffer
           // and the <audio> elements are all per-session state, and carrying
           // them across would show one meeting's audio under another's title.
-          <MeetingView key={current.id} session={current} />
+          <MeetingView key={current.id} session={current} onDeleted={handleDeleted} />
         ) : (
           <EmptyState hasSessions={sessions.length > 0} />
         )}
       </main>
+
+      {/*
+        The sidebar's own confirmation. Looked up from `sessions` rather than
+        held as an object so a session that changes underneath — transcription
+        finishing while the dialog is open — is described accurately, and so a
+        session deleted in another window closes this dialog instead of
+        confirming against a row that is already gone.
+      */}
+      {sidebarDelete && (
+        <DeleteSessionDialog
+          session={sidebarDelete}
+          hasAudio={sidebarDelete.hasAudio}
+          onClose={() => setPendingDelete(null)}
+          onDeleted={handleDeleted}
+        />
+      )}
     </div>
   )
 }

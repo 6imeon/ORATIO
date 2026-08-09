@@ -13,6 +13,26 @@ for what has to land first.
 
 ### Added
 
+- **You can now delete a meeting from inside Oratio.** Until now the only way
+  to remove one was to find its folder in Finder. There is a delete button in
+  each sidebar row (on hover) and in the meeting's header, both of which ask
+  first and name exactly what goes: the audio, the transcript, your notes and
+  the summary.
+
+  The confirmation also offers the smaller thing, because "delete the
+  recording" usually means the audio rather than the notes you spent the
+  meeting writing. **Delete audio only** removes both tracks and keeps
+  everything else — available once the meeting has been transcribed, since
+  before that the audio is the only copy of it.
+
+  Deleting the meeting you are currently *recording* is refused rather than
+  half-done. Stop the recording first.
+
+  Wording throughout says "deleted", not "securely erased". Files are unlinked
+  the way any other program deletes them — nothing is moved to the Trash, but
+  on an SSD the underlying blocks are beyond any application's reach, and
+  claiming otherwise would be a promise Oratio cannot keep.
+
 - **Transcription explains itself on very old or virtualised computers instead
   of failing.** The speech-recognition engine requires an AVX2-capable
   processor. On machines without one — pre-2013 CPUs, and more commonly virtual

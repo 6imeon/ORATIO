@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderConfig, ProviderId, Session, Transcript } from '@shared/types'
+import { DeleteSessionDialog } from '../components/DeleteSessionDialog'
 import { ExportMenu } from '../components/ExportMenu'
 import { SummaryPane } from '../components/SummaryPane'
 import { TranscriptDrawer } from '../components/TranscriptDrawer'
@@ -56,6 +57,8 @@ function useActiveProvider(): ProviderConfig | null {
 
 interface Props {
   session: Session
+  /** Clear the selection once this meeting no longer exists. */
+  onDeleted: (id: string) => void
 }
 
 /**
@@ -66,8 +69,9 @@ interface Props {
  * view *is* the notebook: the widest writing column available and the calmest
  * page. Opening the drawer is purely additive (UI.md §3a).
  */
-export function MeetingView({ session }: Props): React.JSX.Element {
+export function MeetingView({ session, onDeleted }: Props): React.JSX.Element {
   const sessionId = session.id
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [notes, setNotes] = useState('')
   const [transcript, setTranscript] = useState<Transcript | null>(null)
   const [activeMs, setActiveMs] = useState<number | null>(null)
@@ -207,6 +211,22 @@ export function MeetingView({ session }: Props): React.JSX.Element {
         >
           <ExportMenu sessionId={sessionId} hasTranscript={transcript !== null} />
 
+          {/*
+            Plain text, not an icon. A trash can beside Export would be the
+            most dangerous control in the window rendered as the least
+            legible one, and it is not used often enough to earn the
+            ambiguity. Never disabled — deleting a failed or still-queued
+            meeting is a normal thing to want, and main refuses the one case
+            that is unsafe (the session being recorded right now).
+          */}
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="rounded-md border border-transparent px-2.5 py-1 text-[11px] text-(--color-ink-faint) hover:border-(--color-line) hover:bg-(--color-raised) hover:text-(--color-live)"
+          >
+            Delete
+          </button>
+
           {summary.status === 'running' ? (
             <button
               type="button"
@@ -290,6 +310,15 @@ export function MeetingView({ session }: Props): React.JSX.Element {
 
       {/* Reset after the reveal lands so the same turn can be revealed twice. */}
       <RevealReset revealTurn={revealTurn} onDone={onRevealDone} />
+
+      {confirmDelete && (
+        <DeleteSessionDialog
+          session={session}
+          hasAudio={session.hasAudio}
+          onClose={() => setConfirmDelete(false)}
+          onDeleted={onDeleted}
+        />
+      )}
     </div>
   )
 }

@@ -493,6 +493,7 @@ void app.whenReady().then(async () => {
     showMainWindow,
     claimMic,
     rebuildIndex: () => reconcileIndex(true),
+    sessionChanged: (sessionId) => broadcast(EVENTS.SESSION_CHANGED, sessionId),
     onSettingsChanged: (next) => {
       meetingSuggestions.current = next.meetingSuggestions
       detector?.refresh()
