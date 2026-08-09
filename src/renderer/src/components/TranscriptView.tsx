@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatClock, type Turn } from '../lib/turns'
 import { computeBalance } from '../lib/balance'
+import { formatDuration, placeMutedMarkers } from '../lib/mutedMarkers'
 import { usePlayback } from '../hooks/usePlayback'
 import { TransportBar } from './TransportBar'
+import type { MutedRange } from '@shared/types'
 
 interface Props {
   sessionId: string
@@ -20,6 +22,12 @@ interface Props {
   revealTurn?: number | null
   /** Active timestamp, so the collapsed handle can show it while playing. */
   onActiveTime?: (ms: number | null) => void
+  /**
+   * Stretches where the user muted their own microphone. Rendered inline so a
+   * gap in the transcript reads as a deliberate mute rather than a failure —
+   * see `placeMutedMarkers`.
+   */
+  mutedRanges?: MutedRange[]
 }
 
 /**
@@ -39,6 +47,7 @@ export function TranscriptView({
   turns,
   revealTurn,
   onActiveTime,
+  mutedRanges,
 }: Props): React.JSX.Element {
   const micRef = useRef<HTMLAudioElement>(null)
   const systemRef = useRef<HTMLAudioElement>(null)
@@ -190,6 +199,27 @@ export function TranscriptView({
   const playbackRef = useRef(playback)
   playbackRef.current = playback
 
+  /**
+   * Where the muted stretches fall in the turn list.
+   *
+   * Memoised on the two inputs rather than computed inline: this renders
+   * inside the same list as the turns, and the transcript re-renders on every
+   * play/pause. A scan per range per render would put avoidable work on a path
+   * UI.md §4 already asks to keep clear.
+   */
+  const markers = useMemo(() => placeMutedMarkers(turns, mutedRanges), [turns, mutedRanges])
+
+  /** Markers grouped by the turn they precede, so the render loop is one pass. */
+  const markersBefore = useMemo(() => {
+    const map = new Map<number, typeof markers>()
+    for (const m of markers) {
+      const at = map.get(m.beforeTurn)
+      if (at) at.push(m)
+      else map.set(m.beforeTurn, [m])
+    }
+    return map
+  }, [markers])
+
   const play = useCallback((turn: Turn): void => {
     const p = playbackRef.current
     if (!p.available) return
@@ -257,16 +287,21 @@ export function TranscriptView({
         )}
 
         {turns.map((turn) => (
-          <TurnRow
-            key={turn.index}
-            turn={turn}
-            hasAudio={hasAudio}
-            onPlay={play}
-            register={register}
-          />
+          <Fragment key={turn.index}>
+            {markersBefore.get(turn.index)?.map((m) => (
+              <MutedMarkerRow key={`muted-${m.startMs}`} marker={m} />
+            ))}
+            <TurnRow turn={turn} hasAudio={hasAudio} onPlay={play} register={register} />
+          </Fragment>
         ))}
 
-        {turns.length === 0 && (
+        {/* A mute that ran past the last turn — including one still open when
+            the recording stopped — has nothing to sit before. */}
+        {markersBefore.get(turns.length)?.map((m) => (
+          <MutedMarkerRow key={`muted-${m.startMs}`} marker={m} />
+        ))}
+
+        {turns.length === 0 && markers.length === 0 && (
           <p className="py-4 text-sm text-(--color-ink-dim)">
             No speech was detected in this recording.
           </p>
@@ -289,6 +324,63 @@ export function TranscriptView({
  * the whole transcript is one of the four things we do that Granola doesn't.
  * Keyboard access is restored with role/tabIndex/Enter rather than given up.
  */
+/**
+ * "You were muted here."
+ *
+ * The reader half of P2. A muted stretch produces no segments, so without this
+ * the transcript is silently missing the user — and a deliberate mute looks
+ * exactly like a microphone that stopped working. That ambiguity is the thing
+ * mute was built to remove; closing it live (the meter reads `muted`, the menu
+ * bar says `Muted`) is no help a week later when the transcript is all that is
+ * left.
+ *
+ * Deliberately not clickable, even though the audio exists and is seekable.
+ * The whole point of the stretch is that there is nothing of the user in it,
+ * and offering to play it invites the reading that Oratio kept something.
+ * (The other track *is* in there and is reachable from the turns either side.)
+ *
+ * Not memoised: there is at most a handful of these, and they take no props
+ * that change.
+ */
+function MutedMarkerRow({
+  marker,
+}: {
+  marker: { startMs: number; endMs: number }
+}): React.JSX.Element {
+  return (
+    <div className="my-1 flex items-center gap-2.5 px-2 py-1.5" role="note">
+      <span className="h-px flex-1 bg-(--color-line)" />
+      <span className="flex items-center gap-1.5 text-[11px] text-(--color-ink-faint)">
+        <MutedMarkerIcon />
+        <span>
+          Your microphone was muted for {formatDuration(marker.endMs - marker.startMs)}
+        </span>
+        <time className="font-mono tabular-nums">{formatClock(marker.startMs)}</time>
+      </span>
+      <span className="h-px flex-1 bg-(--color-line)" />
+    </div>
+  )
+}
+
+function MutedMarkerIcon(): React.JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-3 w-3 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3Z" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+      <path d="M3 3l18 18" />
+    </svg>
+  )
+}
+
 const TurnRow = memo(function TurnRow({
   turn,
   hasAudio,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import { TranscriptView } from './TranscriptView'
 import { formatClock, type Turn } from '../lib/turns'
 import type { DrawerHandle } from '../hooks/useDrawerState'
+import type { MutedRange } from '@shared/types'
 
 interface Props {
   sessionId: string
@@ -13,6 +14,8 @@ interface Props {
   activeMs: number | null
   onActiveTime: (ms: number | null) => void
   revealTurn: number | null
+  /** Passed through to the transcript so it can explain its own gaps. */
+  mutedRanges?: MutedRange[]
 }
 
 /** Below this the handle would be crushed against the window edge. */
@@ -42,6 +45,7 @@ export function TranscriptDrawer({
   activeMs,
   onActiveTime,
   revealTurn,
+  mutedRanges,
 }: Props): React.JSX.Element {
   const paneRef = useRef<HTMLDivElement>(null)
 
@@ -152,6 +156,7 @@ export function TranscriptDrawer({
                 turns={turns}
                 revealTurn={revealTurn}
                 onActiveTime={onActiveTime}
+                mutedRanges={mutedRanges}
               />
             ) : (
               <p className="px-5 py-4 text-sm text-(--color-ink-dim)">

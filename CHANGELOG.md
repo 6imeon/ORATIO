@@ -30,11 +30,15 @@ for what has to land first.
   including noticing you left it on. Mute always switches off when a recording
   ends, so it can never silently follow you into the next meeting.
 
-  Muted stretches are noted in the meeting's `meta.json`, so a gap in a
-  transcript can be explained as "you were muted here" rather than looking
-  like the app failed. For the same reason the level meter reads `muted`
-  instead of simply sitting flat — a flat meter is what a broken microphone
-  looks like, and that warning has to stay meaningful.
+  Muted stretches show up in the transcript afterwards, marked
+  **"Your microphone was muted for 1 min 20 sec"** with the time it started.
+  Without that a gap where you were muted is indistinguishable from one where
+  the microphone failed — and if you muted three times across an hour, you will
+  not remember which was which. The other side's half of those stretches is
+  still there, since muting only affects your own track. For the same reason
+  the level meter reads `muted` instead of simply sitting flat — a flat meter
+  is what a broken microphone looks like, and that warning has to stay
+  meaningful.
 
 - **You can now delete a meeting from inside Oratio.** Until now the only way
   to remove one was to find its folder in Finder. There is a delete button in

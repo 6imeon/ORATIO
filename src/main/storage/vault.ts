@@ -137,6 +137,7 @@ export async function listSessions(vaultPath: string): Promise<Session[]> {
       hasNotes: existsSync(join(dir, FILES.notes)),
       hasAudio: hasAudio(dir),
       ...(meta.audioDiscardedAt ? { audioDiscardedAt: meta.audioDiscardedAt } : {}),
+      ...(meta.mutedRanges?.length ? { mutedRanges: meta.mutedRanges } : {}),
     })
   }
 

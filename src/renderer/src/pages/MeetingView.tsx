@@ -306,6 +306,7 @@ export function MeetingView({ session, onDeleted }: Props): React.JSX.Element {
         activeMs={activeMs}
         onActiveTime={onActiveTime}
         revealTurn={revealTurn}
+        mutedRanges={session.mutedRanges}
       />
 
       {/* Reset after the reveal lands so the same turn can be revealed twice. */}

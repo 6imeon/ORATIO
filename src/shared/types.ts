@@ -144,6 +144,15 @@ export interface Session {
   hasAudio: boolean
   /** ISO timestamp, present only when the audio was deliberately discarded. */
   audioDiscardedAt?: string
+  /**
+   * Carried up from meta.json so the transcript can explain its own gaps.
+   *
+   * A muted stretch produces no segments — VAD correctly declines to send
+   * silence to ASR — so without this the transcript is simply missing you, and
+   * a deliberate mute is indistinguishable from a microphone that failed.
+   * Absent means nothing was ever muted.
+   */
+  mutedRanges?: MutedRange[]
 }
 
 // ---------------------------------------------------------------------------

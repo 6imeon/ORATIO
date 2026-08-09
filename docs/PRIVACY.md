@@ -680,7 +680,7 @@ is in fact missing from a muted stretch.
 - [x] `IPC` channel + preload bridge, following the existing recording-control shape
 - [x] Record button area shows mute state, and shows it unambiguously while recording
 - [x] Tray menu item with an accelerator, and a tray title/icon that differs while muted
-- [x] Muted ranges recorded in `meta.json` — the transcript should be able to say "you were muted here" rather than showing an unexplained silence
+- [x] Muted ranges recorded in `meta.json`, **and rendered in the transcript** — "Your microphone was muted for 1 min 20 sec" rather than an unexplained silence
 - [x] Muting mid-recording does not produce a discontinuity marker or shift the merged timeline
 - [x] Mute cannot survive into the next recording — it must reset on start, or someone will lose a meeting to it
 
@@ -720,6 +720,51 @@ unit-test anything else on the recording path.
 window.** `CommandOrControl+Shift+M` is registered globally, which covers the
 window too. A second, window-only binding would shadow it inconsistently
 depending on focus.
+
+#### The reader half — "you were muted here"
+
+Writing `mutedRanges` was only half the checklist item, and the missing half was
+the half that matters longest. Muting resolves its own ambiguity *live* — the
+meter reads `muted`, the menu bar says `Muted` — but none of that survives the
+meeting. A week later the transcript is all there is, and a muted stretch in it
+is indistinguishable from a microphone that failed: VAD correctly drops the
+silence, ASR is never called, and the user simply is not there. Several short
+mutes scattered through an hour is the case that exposes it, because nobody
+remembers where they were.
+
+`meta.json` is the only record of the difference, so
+[mutedMarkers.ts](../src/renderer/src/lib/mutedMarkers.ts) reads it and
+[TranscriptView](../src/renderer/src/components/TranscriptView.tsx) draws a rule
+across the transcript at each one. The ranges reach the renderer on the existing
+`Session` object rather than through a new IPC channel — `listSessions` already
+reads `meta.json` and `MeetingView` already holds the result.
+
+Three decisions in the placement, none of them obvious until the test was
+written:
+
+- **Anchored to the end of a range, not the start.** A marker placed before the
+  last turn *preceding* the mute sits above speech that happened while the mic
+  was still live, which reads as though that speech were muted too. Anchoring to
+  the turn that resumes puts it in the visual gap where the silence actually is.
+- **The other side keeps talking through a mute**, since only the mic is gated.
+  So the anchor is the first turn starting after the mute *ended*, from either
+  track — not "the next turn", which is usually a `them` turn from the middle of
+  the muted stretch and puts the marker in the wrong place entirely.
+- **Sub-second mutes are not drawn.** A mis-click removes no meaningful speech,
+  and rendering it would put a full-width rule in the transcript for nothing.
+
+Not clickable, deliberately, even though the audio exists and is seekable: the
+point of the stretch is that there is nothing of the user in it, and offering to
+play it invites the reading that Oratio kept something. The other track is in
+there and is reachable from the turns either side.
+
+Verified against the real module this time — `mutedMarkers` is renderer-side and
+pulls in no Electron, so unlike `RecordingController` it imports directly.
+17/17, including both mutes of a two-mute recording landing on the correct turn
+and on *neither* of the `them` turns spoken through them, a mute still open at
+`stop()` rendering after the last turn, a mute covering an entire recording with
+no turns at all, and the sub-second filter. Then confirmed on screen against a
+real 26-second recording with ranges injected into its `meta.json`.
 
 ### P3 — Retention mode, defaulting to transcript-only
 
