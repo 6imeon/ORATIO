@@ -2,27 +2,34 @@
 
 # Oratio
 
-**Local-first meeting recorder and transcriber for macOS.**
+**Local-first meeting recorder for macOS.**
 
 Records your microphone and your Mac's system audio as two separate tracks,
-transcribes both entirely on your machine, and writes the result as plain
-Markdown and JSON in a folder you choose.
+transcribes both on-device, and writes plain Markdown and JSON into a folder you
+choose. No cloud transcription, no account, no screen-recording permission.
 
-[![Platform](https://img.shields.io/badge/platform-macOS%2014.2%2B-black)](#requirements)
-[![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
-[![Transcription](https://img.shields.io/badge/transcription-100%25%20local-brightgreen)](#ai-features-optional)
-[![Status](https://img.shields.io/badge/status-pre--release-orange)](#status)
+![Electron](https://img.shields.io/badge/Electron-43.2.0-47848F?logo=electron&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178C6?logo=typescript&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![Node](https://img.shields.io/badge/Node-22%2B-5FA04E?logo=nodedotjs&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.5-F69220?logo=pnpm&logoColor=white)
+![sherpa-onnx](https://img.shields.io/badge/sherpa--onnx-1.13.4-005CED)
+![SQLite](https://img.shields.io/badge/SQLite-FTS5-003B57?logo=sqlite&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-14.2%2B-000000?logo=apple&logoColor=white)
+![Licence](https://img.shields.io/badge/licence-MIT-blue)
 
 </div>
 
-> **Your audio never leaves your computer.** No account, no server, no cloud
-> transcription — and no screen-recording permission.
+Oratio is a meeting recorder that keeps **everything on your machine**. It
+captures you and the people you're talking to as two separate tracks, transcribes
+them with a local speech model, and stores the result as files you own. It never
+sends audio to a third-party service, and it never asks to see your screen.
 
 ---
 
 ## Contents
 
-- [Why Oratio](#why-oratio)
+- [Highlights](#highlights)
 - [Status](#status)
 - [Requirements](#requirements)
 - [Getting started](#getting-started)
@@ -36,15 +43,20 @@ Markdown and JSON in a folder you choose.
 
 ---
 
-## Why Oratio
+## Highlights
 
-|  | |
-|---|---|
-| **Two tracks, never mixed** | Your mic is you, system audio is everyone else. Perfect speaker attribution with no speaker-identification model and no error rate. |
-| **Transcription is local, always** | There is no cloud ASR path and no fallback that uploads audio. This is the product, not a setting. |
-| **Plain files are the truth** | Markdown and JSON in your folder. The search index is derived and rebuildable — delete it and it comes back. |
-| **No screen recording** | System audio is captured through a Core Audio tap, so macOS never shows the purple screen-recording indicator. |
-| **Knows when a meeting starts** | Offers to record when a call opens the microphone. It only ever offers. |
+- **Two tracks, never mixed.** Your mic is you, system audio is everyone else —
+  speaker attribution with no speaker-identification model and no error rate.
+- **Transcription is local, always.** There is no cloud ASR path and no fallback
+  that uploads audio. This is the product, not a setting.
+- **Plain files are the source of truth.** Markdown and JSON in your folder. The
+  SQLite index is derived — delete it and it rebuilds.
+- **No screen-recording permission.** System audio comes from a Core Audio tap,
+  so macOS never lights the purple screen-recording indicator.
+- **Knows when a meeting starts.** Offers to record when a call opens the
+  microphone — and only ever offers.
+- **Survives a crash.** The filesystem *is* the queue, so an interrupted session
+  is picked up on the next launch.
 
 ## Status
 
