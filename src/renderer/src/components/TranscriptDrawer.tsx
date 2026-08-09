@@ -16,6 +16,8 @@ interface Props {
   revealTurn: number | null
   /** Passed through to the transcript so it can explain its own gaps. */
   mutedRanges?: MutedRange[]
+  /** Save one corrected line. Omitted when the transcript is not editable. */
+  onCorrect?: (segmentIndex: number, text: string) => Promise<void>
 }
 
 /** Below this the handle would be crushed against the window edge. */
@@ -46,6 +48,7 @@ export function TranscriptDrawer({
   onActiveTime,
   revealTurn,
   mutedRanges,
+  onCorrect,
 }: Props): React.JSX.Element {
   const paneRef = useRef<HTMLDivElement>(null)
 
@@ -157,6 +160,7 @@ export function TranscriptDrawer({
                 revealTurn={revealTurn}
                 onActiveTime={onActiveTime}
                 mutedRanges={mutedRanges}
+                {...(onCorrect ? { onCorrect } : {})}
               />
             ) : (
               <p className="px-5 py-4 text-sm text-(--color-ink-dim)">

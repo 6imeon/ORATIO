@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Session, SessionMeta, Transcript } from '@shared/types'
+import type { Corrections, Session, SessionMeta, Transcript } from '@shared/types'
+import { applyCorrections } from '@shared/corrections'
 
 /**
  * The vault: a plain folder the user chooses, holding one directory per
@@ -12,7 +13,8 @@ import type { Session, SessionMeta, Transcript } from '@shared/types'
  *       mic.wav          your side
  *       system.wav       everyone else
  *       meta.json        timings, per-track offsets, model used
- *       transcript.json  canonical transcript
+ *       transcript.json  machine output — rewritten wholesale on re-transcription
+ *       corrections.json your edits to it, if any (overlay, never merged in)
  *       notes.md         your notes + AI summary (YAML frontmatter)
  *       transcribe.log
  *     index.sqlite       search index — DERIVED, safe to delete
@@ -38,6 +40,7 @@ export const FILES = {
   system: 'system.wav',
   meta: 'meta.json',
   transcript: 'transcript.json',
+  corrections: 'corrections.json',
   notes: 'notes.md',
   log: 'transcribe.log',
 } as const
@@ -82,12 +85,60 @@ export async function writeMeta(dir: string, meta: SessionMeta): Promise<void> {
   await writeFile(join(dir, FILES.meta), JSON.stringify(meta, null, 2), 'utf8')
 }
 
+/**
+ * The transcript as the user should see it: machine output with their own
+ * corrections merged over it.
+ *
+ * The merge lives here, at the single point every consumer already goes
+ * through — search indexing, all four export formats, the AI summary and the
+ * renderer. Doing it at the call sites instead would mean six places that must
+ * each remember, and the failure mode of forgetting one is a summary quoting
+ * words the transcript no longer shows.
+ *
+ * Use `readRawTranscript` for the machine output alone; the only caller that
+ * should want it is the code re-applying corrections after a re-transcription.
+ */
 export async function readTranscript(dir: string): Promise<Transcript | null> {
+  const transcript = await readRawTranscript(dir)
+  if (!transcript) return null
+
+  const corrections = await readCorrections(dir)
+  if (!corrections) return transcript
+
+  return { ...transcript, segments: applyCorrections(transcript.segments, corrections) }
+}
+
+/** transcript.json exactly as written, with no corrections applied. */
+export async function readRawTranscript(dir: string): Promise<Transcript | null> {
   try {
     return JSON.parse(await readFile(join(dir, FILES.transcript), 'utf8')) as Transcript
   } catch {
     return null
   }
+}
+
+export async function readCorrections(dir: string): Promise<Corrections | null> {
+  try {
+    return JSON.parse(await readFile(join(dir, FILES.corrections), 'utf8')) as Corrections
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Write corrections.json, or remove it once the last correction is gone.
+ *
+ * Reverting every edit leaves no file rather than an empty one, so a session
+ * the user has restored to machine output is indistinguishable on disk from one
+ * they never touched.
+ */
+export async function writeCorrections(dir: string, corrections: Corrections): Promise<void> {
+  const path = join(dir, FILES.corrections)
+  if (corrections.segments.length === 0) {
+    await rm(path, { force: true })
+    return
+  }
+  await writeFile(path, JSON.stringify(corrections, null, 2), 'utf8')
 }
 
 export async function readNotes(dir: string): Promise<string> {

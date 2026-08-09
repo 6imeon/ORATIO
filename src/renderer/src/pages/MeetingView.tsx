@@ -98,6 +98,22 @@ export function MeetingView({ session, onDeleted }: Props): React.JSX.Element {
   )
 
   /**
+   * Save one corrected line.
+   *
+   * Main returns the whole merged transcript rather than an ack, so the
+   * corrected text arrives from the same code path that produced it. Applying
+   * the edit optimistically here would mean a second implementation of the
+   * merge rules living in the renderer, free to disagree with the one on disk.
+   */
+  const correct = useCallback(
+    async (segmentIndex: number, text: string): Promise<void> => {
+      const next = await window.oratio.session.correct(sessionId, segmentIndex, text)
+      if (next) setTranscript(next)
+    },
+    [sessionId],
+  )
+
+  /**
    * Guards the autosave below. Without it, the effect fires once with the
    * empty initial state before the load resolves and overwrites the file with
    * "" — silently destroying the notes of every session you click into.
@@ -307,6 +323,7 @@ export function MeetingView({ session, onDeleted }: Props): React.JSX.Element {
         onActiveTime={onActiveTime}
         revealTurn={revealTurn}
         mutedRanges={session.mutedRanges}
+        onCorrect={correct}
       />
 
       {/* Reset after the reveal lands so the same turn can be revealed twice. */}

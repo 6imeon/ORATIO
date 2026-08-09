@@ -16,12 +16,50 @@ export interface TranscriptSegment {
   text: string
   /** Present only when diarization has split the `them` track. */
   speakerLabel?: string
+  /**
+   * This line's text came from the user, not the model.
+   *
+   * Set only in memory, by merging corrections.json over the segments as they
+   * are read. It is never written to transcript.json — that file stays pure
+   * machine output, which is the entire point of the overlay design.
+   */
+  corrected?: boolean
+  /** The model's original wording, carried alongside so an edit can be undone. */
+  originalText?: string
 }
 
 export interface Transcript {
   model: string
   createdAt: string
   segments: TranscriptSegment[]
+}
+
+/**
+ * One user edit to one segment — the whole of corrections.json.
+ *
+ * `was` is not redundant with transcript.json. It is what makes the correction
+ * re-appliable after a re-transcription rewrites that file, and what lets the UI
+ * show which words are the machine's and which are yours.
+ */
+export interface Correction {
+  /** Segment position at the time of the edit. A hint, not an identity — see `was`. */
+  index: number
+  /** What the user typed. */
+  text: string
+  /** What the model had produced there. */
+  was: string
+  editedAt: string
+  /**
+   * Set when a re-transcription changed the text so much the correction could no
+   * longer be placed. Kept rather than deleted — the user typed it, and this is
+   * the only copy. Nothing reads an orphaned correction into the transcript.
+   */
+  orphaned?: boolean
+}
+
+/** corrections.json — absent for the overwhelming majority of sessions. */
+export interface Corrections {
+  segments: Correction[]
 }
 
 /**

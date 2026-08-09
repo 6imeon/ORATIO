@@ -23,7 +23,7 @@ import {
   type SummarySection,
 } from '@shared/ipc'
 import { MODELS } from '@shared/models'
-import type { KeyedProviderId, ModelId, Settings } from '@shared/types'
+import type { KeyedProviderId, ModelId, Settings, Transcript } from '@shared/types'
 import type { AudioCapture } from '../audio/AudioCapture'
 import type { RecordingController } from '../recording/RecordingController'
 import type { TranscriptionQueue } from '../transcription/TranscriptionQueue'
@@ -32,6 +32,9 @@ import type { ModelManager } from '../models/ModelManager'
 import {
   listSessions,
   readTranscript,
+  readRawTranscript,
+  readCorrections,
+  writeCorrections,
   readMeta,
   readNotes,
   writeNotes,
@@ -39,6 +42,7 @@ import {
   discardSessionAudio,
   sessionDir,
 } from '../storage/vault'
+import { applyCorrections, upsertCorrection } from '@shared/corrections'
 import { parseNotes, renderNotesDoc } from '../storage/notesDoc'
 import { FORMATS, suggestedFilename } from '../export/formats'
 import { writeExport } from '../export/exporter'
@@ -209,6 +213,61 @@ export function registerIpc(deps: Deps): void {
     // dead session in its sidebar until something else happened to change.
     deps.sessionChanged(sessionId)
   })
+
+  /**
+   * Correct one line of the transcript.
+   *
+   * The edit goes to corrections.json; transcript.json is never touched. See
+   * docs/PRIVACY.md §4.1 — re-transcription rewrites transcript.json wholesale,
+   * so anything written there is by design disposable.
+   *
+   * Indexes against the *merged* transcript so search finds the corrected
+   * wording rather than the machine's. Without this the fix appears on screen
+   * but not in search, which reads as the edit having silently failed.
+   */
+  ipcMain.handle(
+    IPC.SESSION_CORRECT,
+    async (_e, sessionId: string, index: number, text: string) => {
+      const settings = await loadSettings()
+      const dir = sessionDir(settings.vaultPath, sessionId)
+
+      // Raw, not merged: `upsertCorrection` needs the machine's own wording to
+      // store as `was`, and reads it from the segment it is given.
+      const raw = await readRawTranscript(dir)
+      if (!raw) throw new Error('That meeting has no transcript yet.')
+
+      const segment = raw.segments[index]
+      if (!segment) throw new Error('That line is no longer part of the transcript.')
+
+      const existing = await readCorrections(dir)
+      const merged = applyCorrections(raw.segments, existing)
+      const current = merged[index] ?? segment
+
+      const next = upsertCorrection(
+        existing,
+        current,
+        index,
+        text,
+        new Date().toISOString(),
+      )
+      await writeCorrections(dir, next)
+
+      const transcript: Transcript = {
+        ...raw,
+        segments: applyCorrections(raw.segments, next),
+      }
+
+      const meta = await readMeta(dir)
+      if (meta) {
+        await deps.searchIndex
+          .indexSession(sessionId, meta, transcript)
+          .catch((err) => log.warn('[ipc] could not re-index corrected session', sessionId, err))
+      }
+
+      deps.sessionChanged(sessionId)
+      return transcript
+    },
+  )
 
   ipcMain.handle(IPC.SESSION_REVEAL, async (_e, sessionId: string) => {
     const settings = await loadSettings()

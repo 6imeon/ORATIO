@@ -557,11 +557,34 @@ and — the reason it matters more here than in a notes app — **it makes plain
 which words are the machine's and which are yours.** UI.md §86 already treats
 provenance as load-bearing ("keeps the provenance of every sentence visible").
 
-Open question deliberately left open: whether re-transcription should re-apply
-corrections by segment index (breaks when segmentation changes, which A3 just
-changed) or by fuzzy text match (survives re-segmentation, can mis-apply). Index
-is the simpler start, and `was` makes a bad re-application detectable. Worth
-deciding before P4 rather than during it.
+**Decided before building (the question this section left open):** re-application
+is **by index, verified against `was`, with a single unambiguous text fallback** —
+not index alone, and not fuzzy matching.
+
+Index alone is unsafe here for a reason specific to this codebase rather than a
+hypothetical one: A3's bleed removal *deletes* segments, so a re-transcription
+shifts every index after the removal. Applying blind would move a correction onto
+a different sentence, which is worse than losing it — a wrong word the user typed
+themselves is indistinguishable from one they'd have caught.
+
+Fuzzy matching fails the other way. `was` is by definition the text a model got
+wrong, so it is short, garbled, and often near-duplicated elsewhere in the same
+meeting ("cooper netties" twice in an hour about Kubernetes). A similarity
+threshold high enough to be safe rejects the real matches; one low enough to
+catch them mis-applies.
+
+So the rule is:
+
+1. If `segments[index]` still equals `was`, apply — the overwhelmingly common
+   case, since most re-transcriptions change nothing before the correction.
+2. Otherwise search the whole transcript for segments equal to `was`. Exactly
+   one match, apply and record the new index. Zero or more than one, drop it.
+3. A dropped correction is **kept in the file**, marked `orphaned`, never
+   silently deleted — the user typed it, and it is the only copy.
+
+Every step is exact string equality. The design gets its safety from `was`
+rather than from a matching algorithm, which is why no threshold appears
+anywhere in it.
 
 **Not in scope:** editing timings, splitting or merging segments, or changing
 speaker attribution. Each is a bigger design than the text edit and none was
@@ -795,15 +818,32 @@ the audio while that feature is being built. Mostly a rename and a default flip
 
 Design in §4.1. The overlay file is the load-bearing decision.
 
-- [ ] `corrections.json` written beside `transcript.json`, never into it
-- [ ] Each correction keeps `was`, so an edit is reversible and provenance stays visible
-- [ ] Vault read path merges corrections over segments; `transcript.json` alone remains valid and complete
-- [ ] Re-transcription does **not** destroy corrections — the case that makes the overlay necessary
-- [ ] Search index reflects corrected text, not stale machine output
-- [ ] AI summary and exports read corrected text, so the summary cannot cite words the transcript no longer shows
-- [ ] Edited lines are visually distinguishable from machine output
-- [ ] Playback still seeks correctly from an edited line — timings are not touched by an edit
-- [ ] Decide and record the re-application rule (segment index vs fuzzy match) before building it
+- [x] `corrections.json` written beside `transcript.json`, never into it
+- [x] Each correction keeps `was`, so an edit is reversible and provenance stays visible
+- [x] Vault read path merges corrections over segments; `transcript.json` alone remains valid and complete
+- [x] Re-transcription does **not** destroy corrections — the case that makes the overlay necessary
+- [x] Search index reflects corrected text, not stale machine output
+- [x] AI summary and exports read corrected text, so the summary cannot cite words the transcript no longer shows
+- [x] Edited lines are visually distinguishable from machine output
+- [x] Playback still seeks correctly from an edited line — timings are not touched by an edit
+- [x] Decide and record the re-application rule (segment index vs fuzzy match) before building it
+
+**How the last five came out for free.** Every consumer — search indexing, all
+four export formats, the AI summary and the renderer — already read the
+transcript through `readTranscript`, so the merge went *there* rather than at the
+call sites. Doing it per-caller would have meant six places that each have to
+remember, where forgetting one produces a summary quoting words the transcript no
+longer shows. `readRawTranscript` exists for the one caller that genuinely wants
+machine output: the re-application pass itself.
+
+**One thing the merge could not paper over.** A turn is several segments merged
+into a paragraph for reading; a correction is per-*segment*, because that is what
+carries `startMs`/`endMs`. So the editor puts one field per segment rather than
+one per paragraph. A single paragraph-wide field would have to split the edited
+text back across those segments to save it, and any split that isn't exactly
+where the model put the boundary moves words onto a neighbouring timestamp —
+click-to-play then seeks to the wrong moment, silently, which is the feature the
+transcript exists for.
 
 ### P5 — Vault protection *(not planned — recorded for completeness)*
 

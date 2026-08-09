@@ -23,6 +23,16 @@ export interface Turn {
   text: string
   /** Kept so ⌘F hit-to-audio can seek to the line, not just the turn. */
   segments: TranscriptSegment[]
+  /**
+   * Where this turn's segments sit in the transcript, so an edit can be written
+   * back to the right one.
+   *
+   * A turn is a display construct — several segments merged into a paragraph —
+   * while a correction is per-segment. Without this the renderer would have to
+   * re-derive the mapping by scanning for object identity, which is exactly the
+   * kind of implicit coupling that breaks the next time merging changes.
+   */
+  firstSegment: number
 }
 
 /**
@@ -49,7 +59,9 @@ const TURN_GAP_MS = 6_000
 export function mergeTurns(segments: readonly TranscriptSegment[]): Turn[] {
   const turns: Turn[] = []
 
-  for (const seg of segments) {
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]
+    if (seg === undefined) continue
     const last = turns[turns.length - 1]
     const continues =
       last !== undefined &&
@@ -74,6 +86,7 @@ export function mergeTurns(segments: readonly TranscriptSegment[]): Turn[] {
       endMs: seg.endMs,
       text: seg.text.trim(),
       segments: [seg],
+      firstSegment: i,
     })
   }
 

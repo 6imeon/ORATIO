@@ -9,7 +9,14 @@ import type { TranscriptionEngine } from './TranscriptionEngine'
 import { isLikelyHallucination } from './vad'
 import { removeSpeakerBleed } from './bleed'
 import { measureTrackGains, readWav } from '../audio/readWav'
-import { discardSessionAudio, hasAudio, readMeta } from '../storage/vault'
+import {
+  discardSessionAudio,
+  hasAudio,
+  readCorrections,
+  readMeta,
+  writeCorrections,
+} from '../storage/vault'
+import { reapplyCorrections } from '@shared/corrections'
 import { loadSettings } from '../storage/settings'
 
 /**
@@ -288,6 +295,28 @@ export class TranscriptionQueue extends EventEmitter {
     await rename(tmp, join(dir, 'transcript.json'))
 
     await this.#log(dir, `done — ${merged.length} segments`)
+
+    // Re-place the user's edits against the transcript that just replaced the
+    // one they were made on. This is the case the whole overlay design exists
+    // for: writing edits into transcript.json would have destroyed them three
+    // lines ago, silently.
+    //
+    // Failure is logged and swallowed. corrections.json is left exactly as it
+    // was, so the edits survive to be re-placed on the next run — losing a
+    // transcription over a bookkeeping error would be the worse trade.
+    try {
+      const existing = await readCorrections(dir)
+      if (existing?.segments.length) {
+        const result = reapplyCorrections(segments, existing)
+        await writeCorrections(dir, result.corrections)
+        await this.#log(
+          dir,
+          `corrections re-applied — ${result.applied} kept, ${result.orphaned} orphaned`,
+        )
+      }
+    } catch (err) {
+      await this.#log(dir, `corrections re-apply failed: ${String(err)}`)
+    }
 
     // Ordered after the transcript is on disk, never before: the audio is the
     // only copy of the meeting until the transcript exists, so deleting it

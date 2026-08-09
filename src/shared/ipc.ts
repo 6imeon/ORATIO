@@ -34,6 +34,11 @@ export const IPC = {
   SESSION_TRANSCRIPT: 'session:transcript',
   SESSION_NOTES_GET: 'session:notes:get',
   SESSION_NOTES_SET: 'session:notes:set',
+  /**
+   * Correct one transcript line. Resolves with the merged transcript, so the
+   * renderer never has to reconstruct what the overlay did.
+   */
+  SESSION_CORRECT: 'session:correct',
   SESSION_DELETE: 'session:delete',
   SESSION_REVEAL: 'session:reveal',
   SESSION_SEARCH: 'session:search',

@@ -58,6 +58,16 @@ const api = {
     getNotes: (id: string): Promise<string> => ipcRenderer.invoke(IPC.SESSION_NOTES_GET, id),
     setNotes: (id: string, md: string): Promise<void> =>
       ipcRenderer.invoke(IPC.SESSION_NOTES_SET, id, md),
+    /**
+     * Correct one line of the transcript. Passing the machine's original text
+     * back reverts the line.
+     *
+     * Resolves with the whole merged transcript rather than an ack: the merge
+     * lives in main, and having the renderer apply its own edit optimistically
+     * would give two implementations of the same rules that could disagree.
+     */
+    correct: (id: string, index: number, text: string): Promise<Transcript | null> =>
+      ipcRenderer.invoke(IPC.SESSION_CORRECT, id, index, text),
     remove: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_DELETE, id),
     reveal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.SESSION_REVEAL, id),
     /**

@@ -28,6 +28,11 @@ interface Props {
    * see `placeMutedMarkers`.
    */
   mutedRanges?: MutedRange[]
+  /**
+   * Save one corrected line. Absent when the transcript is not editable, which
+   * hides the edit affordance rather than showing one that fails.
+   */
+  onCorrect?: (segmentIndex: number, text: string) => Promise<void>
 }
 
 /**
@@ -48,6 +53,7 @@ export function TranscriptView({
   revealTurn,
   onActiveTime,
   mutedRanges,
+  onCorrect,
 }: Props): React.JSX.Element {
   const micRef = useRef<HTMLAudioElement>(null)
   const systemRef = useRef<HTMLAudioElement>(null)
@@ -228,6 +234,18 @@ export function TranscriptView({
   }, [])
 
   /**
+   * Same stability problem as `register`, and the same fix: the callback handed
+   * to every memoised row must not change identity, so the prop is read through
+   * a ref rather than closed over.
+   */
+  const correctRef = useRef(onCorrect)
+  correctRef.current = onCorrect
+
+  const correct = useCallback(async (segmentIndex: number, text: string): Promise<void> => {
+    await correctRef.current?.(segmentIndex, text)
+  }, [])
+
+  /**
    * Row registration, stable for the life of the view.
    *
    * `TurnRow` is memoised, so every prop it receives has to keep its identity
@@ -291,7 +309,14 @@ export function TranscriptView({
             {markersBefore.get(turn.index)?.map((m) => (
               <MutedMarkerRow key={`muted-${m.startMs}`} marker={m} />
             ))}
-            <TurnRow turn={turn} hasAudio={hasAudio} onPlay={play} register={register} />
+            <TurnRow
+              turn={turn}
+              hasAudio={hasAudio}
+              onPlay={play}
+              register={register}
+              onCorrect={correct}
+              editable={onCorrect !== undefined}
+            />
           </Fragment>
         ))}
 
@@ -386,13 +411,31 @@ const TurnRow = memo(function TurnRow({
   hasAudio,
   onPlay,
   register,
+  onCorrect,
+  editable,
 }: {
   turn: Turn
   hasAudio: boolean
   onPlay: (t: Turn) => void
   register: (index: number, node: HTMLElement | null) => void
+  onCorrect: (segmentIndex: number, text: string) => Promise<void>
+  editable: boolean
 }): React.JSX.Element {
   const mine = turn.speaker === 'me'
+  const [editing, setEditing] = useState(false)
+
+  if (editing) {
+    return (
+      <TurnEditor
+        turn={turn}
+        onCorrect={onCorrect}
+        onDone={() => setEditing(false)}
+        register={register}
+      />
+    )
+  }
+
+  const corrected = turn.segments.some((s) => s.corrected)
 
   return (
     <div
@@ -436,6 +479,34 @@ const TurnRow = memo(function TurnRow({
         <time className="font-mono text-[11px] tabular-nums text-(--color-ink-faint)">
           {formatClock(turn.startMs)}
         </time>
+        {/*
+          Provenance, not decoration. UI.md §86 treats "which words are the
+          machine's and which are yours" as load-bearing, and an edited
+          transcript that looks identical to machine output quietly launders
+          one into the other.
+        */}
+        {corrected && (
+          <span
+            className="text-[10px] text-(--color-ink-faint)"
+            title="You edited this line"
+          >
+            edited
+          </span>
+        )}
+        {/*
+          Stops the mousedown from reaching the row, which would seek the audio
+          instead of opening the editor.
+        */}
+        {editable && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setEditing(true)}
+            className="ml-auto text-[11px] text-(--color-ink-faint) opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-(--color-ink) focus-visible:outline-none"
+          >
+            Edit
+          </button>
+        )}
       </p>
       {/*
         Hanging indent: the speaker label sits proud and the prose aligns in a
@@ -445,3 +516,142 @@ const TurnRow = memo(function TurnRow({
     </div>
   )
 })
+
+/**
+ * Editing one turn — one field per ASR segment, not one for the paragraph.
+ *
+ * This is the shape the data forces rather than a UI preference. A turn is
+ * several segments merged for reading (see `mergeTurns`); a correction is
+ * per-segment, because that is what carries `startMs`/`endMs`. One field for
+ * the whole paragraph would have to split the user's text back across those
+ * segments to save it, and any split that isn't exactly where the model put the
+ * boundary silently moves words onto the wrong timestamp — click-to-play then
+ * seeks to the wrong moment, which is the feature this transcript exists for.
+ *
+ * Splitting, merging and re-timing segments are all explicitly out of scope
+ * (docs/PRIVACY.md §4.1). Fixing the words is not.
+ */
+function TurnEditor({
+  turn,
+  onCorrect,
+  onDone,
+  register,
+}: {
+  turn: Turn
+  onCorrect: (segmentIndex: number, text: string) => Promise<void>
+  onDone: () => void
+  register: (index: number, node: HTMLElement | null) => void
+}): React.JSX.Element {
+  const [drafts, setDrafts] = useState<string[]>(() => turn.segments.map((s) => s.text))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const dirty = drafts.some((d, i) => d !== turn.segments[i]?.text)
+
+  const save = async (): Promise<void> => {
+    setSaving(true)
+    setError(null)
+    try {
+      // Sequential, not Promise.all: each write is a read-modify-write of the
+      // same corrections.json, so concurrent saves would drop all but one.
+      for (let i = 0; i < drafts.length; i++) {
+        const draft = drafts[i]
+        const seg = turn.segments[i]
+        if (draft === undefined || seg === undefined || draft === seg.text) continue
+        await onCorrect(turn.firstSegment + i, draft)
+      }
+      onDone()
+    } catch (err) {
+      // Kept open with the text intact — the user typed it, and closing the
+      // editor on a failed save is the one way to actually lose it.
+      setError(err instanceof Error ? err.message : 'Could not save that edit.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      ref={(node) => register(turn.index, node)}
+      className="turn -mx-2 rounded-md bg-(--color-raised) px-2 py-2"
+    >
+      <p className="mb-1 flex items-baseline gap-2">
+        <span
+          className={`text-xs font-semibold ${
+            turn.speaker === 'me' ? 'text-(--color-me)' : 'text-(--color-them)'
+          }`}
+        >
+          {turn.speakerLabel ?? (turn.speaker === 'me' ? 'You' : 'Them')}
+        </span>
+        <time className="font-mono text-[11px] tabular-nums text-(--color-ink-faint)">
+          {formatClock(turn.startMs)}
+        </time>
+      </p>
+
+      <div className="flex flex-col gap-1 pl-3">
+        {turn.segments.map((seg, i) => (
+          <textarea
+            key={`${seg.startMs}-${i}`}
+            value={drafts[i] ?? ''}
+            autoFocus={i === 0}
+            rows={1}
+            onChange={(e) => {
+              setDrafts((prev) => prev.map((d, j) => (j === i ? e.target.value : d)))
+              // Grow with the text: a fixed height hides the end of a long
+              // line, which is where ASR errors cluster.
+              e.target.style.height = 'auto'
+              e.target.style.height = `${e.target.scrollHeight}px`
+            }}
+            onKeyDown={(e) => {
+              // Enter saves; Shift+Enter is a newline. Escape abandons.
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                void save()
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                onDone()
+              }
+            }}
+            className="w-full resize-none rounded border border-(--color-line) bg-(--color-bg) px-1.5 py-1 text-[13px] leading-relaxed text-(--color-ink) focus-visible:border-(--color-me) focus-visible:outline-none"
+          />
+        ))}
+      </div>
+
+      {/* Same treatment as SummaryPane's errors — the app has no danger token,
+          and inventing one for a single message would fork the palette. */}
+      {error && <p className="mt-1 pl-3 text-[11px] text-(--color-ink-dim)">{error}</p>}
+
+      <div className="mt-1.5 flex items-center gap-2 pl-3">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving || !dirty}
+          className="rounded bg-(--color-me) px-2 py-1 text-[11px] font-medium text-white disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={onDone}
+          className="rounded px-2 py-1 text-[11px] text-(--color-ink-dim) hover:text-(--color-ink)"
+        >
+          Cancel
+        </button>
+        {turn.segments.some((s) => s.corrected) && (
+          <button
+            type="button"
+            onClick={() => {
+              // Revert to the machine's wording. `upsertCorrection` treats an
+              // edit equal to `was` as a removal, so this deletes the
+              // correction rather than storing a redundant one.
+              setDrafts(turn.segments.map((s) => s.originalText ?? s.text))
+            }}
+            className="ml-auto text-[11px] text-(--color-ink-faint) hover:text-(--color-ink)"
+          >
+            Revert to original
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}

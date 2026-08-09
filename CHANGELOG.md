@@ -13,6 +13,31 @@ for what has to land first.
 
 ### Added
 
+- **You can now fix what the transcriber got wrong.** Hover any line and click
+  **Edit**. Names, jargon and acronyms are where local models slip most often,
+  and a garbled one used to be permanent.
+
+  **Your edits go in their own file.** They are written to `corrections.json`
+  next to the transcript, and `transcript.json` is never modified — it stays
+  exactly what the model produced. That is not an implementation detail:
+  re-transcribing a meeting (a better model, or a retry) rewrites
+  `transcript.json` from scratch, so an edit stored there would be destroyed
+  silently. Stored beside it, your edits are re-applied to the new transcript
+  instead, and any that no longer fit are kept in the file rather than deleted.
+
+  Edited lines are marked **edited**, and **Revert to original** puts the
+  model's wording back — so which words are yours and which are the machine's
+  stays visible. Reverting every edit removes the file entirely.
+
+  Corrections flow everywhere the transcript does: search finds the corrected
+  wording, and exports and AI summaries use it, so a summary can't quote words
+  the transcript no longer shows. Timings are never touched, so click-to-play
+  still lands in the right place on a line you have edited.
+
+  Editing is per transcript line rather than per paragraph, and changing
+  timings, splitting or merging lines, or reassigning who said what are not
+  part of this.
+
 - **You can now mute your microphone while recording.** A mute button sits
   under the record button, there is an item in the menu-bar menu, and
   `⌘⇧M` works from anywhere — including from inside the meeting app, which
