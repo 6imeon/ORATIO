@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import log from 'electron-log/main'
 import { EVENTS, IPC, type NavTarget, type TranscriptionProgress } from '@shared/ipc'
-import { loadSettings } from './storage/settings'
+import { loadSettings, saveSettings } from './storage/settings'
+import { autoDetectProvider } from './ai/Summarizer'
 import { IndexClient, type IndexableSession } from './storage/IndexClient'
 import { TranscriptionQueue } from './transcription/TranscriptionQueue'
 import { MacAudioCapture } from './audio/MacAudioCapture'
@@ -402,6 +403,17 @@ void app.whenReady().then(async () => {
   // session would delay the tray appearing. Deleting index.sqlite is a
   // supported repair, so this path has to be able to rebuild from nothing.
   void reconcileIndex().catch((err) => log.warn('[index] catch-up failed', err))
+
+  // Look for a local Ollama, also in the background and for the same reason:
+  // when it is absent the probe waits out a 1.5 s connect timeout, and that
+  // would be 1.5 s of the tray not existing on every launch of a machine
+  // without it. Only ever selects the LOCAL provider — a cloud summariser is
+  // opt-in, never something the user discovers after the fact.
+  void (async () => {
+    const current = await loadSettings()
+    const detected = await autoDetectProvider(current)
+    if (detected !== current) await saveSettings(detected)
+  })().catch((err) => log.warn('[ai] provider auto-detect failed', err))
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) showMainWindow()

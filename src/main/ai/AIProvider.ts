@@ -1,3 +1,4 @@
+import { SUMMARY_SECTION_NAMES, type SummarySection } from '@shared/ipc'
 import type { ProviderId, Transcript } from '@shared/types'
 
 export interface SummarizeInput {
@@ -34,30 +35,16 @@ export interface AIProvider {
 /**
  * The section set, in emission order.
  *
- * Chosen to match what the industry converged on rather than inventing our
- * own: Google Meet emits Summary / Decisions / Next steps / Details; Grain's
- * default is summary + key points + action items; Granola's "Meeting recap"
- * is Context / Discussion summary / Key decisions / Action items / Open
- * questions. The intersection is what people expect a meeting note to
- * contain, so that is what we ship.
- *
- * `Open questions` earns its place by absorbing the things a model would
- * otherwise be tempted to resolve — an unanswered question recorded as a
- * question cannot become a fabricated decision.
+ * Defined in `@shared/ipc` and re-exported here so main and the renderer agree
+ * by construction — the renderer cannot import this module, which pulls in the
+ * provider SDKs. See the rationale for the set itself at its declaration.
  *
  * The markers are what make sectioned output possible from a single call
  * (see SECTION_MARKER). Headings alone would be ambiguous: a model writing
  * "## Decisions" inside a discussion point would corrupt the parse.
  */
-export const SUMMARY_SECTIONS = [
-  'Summary',
-  'Decisions',
-  'Action items',
-  'Discussion',
-  'Open questions',
-] as const
-
-export type SummarySection = (typeof SUMMARY_SECTIONS)[number]
+export const SUMMARY_SECTIONS = SUMMARY_SECTION_NAMES
+export type { SummarySection }
 
 /**
  * Emitted on its own line before each section, so the renderer can route a

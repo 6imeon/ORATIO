@@ -61,6 +61,23 @@ export const IPC = {
   AI_PROVIDERS: 'ai:providers',
   AI_SET_KEY: 'ai:setKey',
   AI_SUMMARIZE: 'ai:summarize',
+  /**
+   * Abort a summary in flight.
+   *
+   * A separate channel rather than a returned handle, because the window can
+   * be closed and reopened while a summary streams — this is a menu-bar app —
+   * and the new window has to be able to stop a run it did not start.
+   */
+  AI_CANCEL: 'ai:cancel',
+  /** The stored summary for a session, if it has one. Read from notes.md. */
+  AI_SUMMARY_GET: 'ai:summary:get',
+  /**
+   * Delete the summary, keeping the user's notes. "Reset to my notes".
+   *
+   * Non-destructive by construction: the two halves of notes.md are separate
+   * fields, so removing one cannot touch the other.
+   */
+  AI_SUMMARY_CLEAR: 'ai:summary:clear',
 
   // Permissions
   PERMISSION_CHECK: 'permission:check',
@@ -96,7 +113,10 @@ export const EVENTS = {
   TRANSCRIPTION_PARTIAL: 'evt:transcription:partial',
   MODEL_PROGRESS: 'evt:model:progress',
   SESSION_CHANGED: 'evt:session:changed',
+  /** A summary delta, tagged with the section it belongs to. */
   AI_TOKEN: 'evt:ai:token',
+  /** A summary run ended — completed, cancelled, or failed. */
+  AI_DONE: 'evt:ai:done',
   /** Main telling a live window to show a session or the Settings pane. */
   NAVIGATE: 'evt:navigate',
 } as const
@@ -136,6 +156,58 @@ export interface TranscriptionProgress {
   progress: number
   queued: number
   error?: string
+}
+
+/**
+ * A summary delta, tagged with its section.
+ *
+ * Tagged rather than a bare string because one model call produces all five
+ * sections (UI.md §6a) and the UI renders them as separate blocks. The
+ * demultiplexing happens in main, where the parser already lives, so the
+ * renderer never has to know about the `§§` marker protocol.
+ */
+export interface AITokenEvent {
+  sessionId: string
+  section: SummarySection
+  delta: string
+}
+
+/** Why a summary run stopped. */
+export interface AIDoneEvent {
+  sessionId: string
+  status: 'complete' | 'cancelled' | 'failed'
+  error?: string
+}
+
+/**
+ * The five sections, in emission order.
+ *
+ * Declared HERE, in shared, rather than in `AIProvider.ts` where the prompt
+ * lives: that module imports the Anthropic and OpenAI SDKs, so a renderer
+ * importing the section list from it would drag Node-only code into the
+ * browser bundle. Main re-exports this list, so there is exactly one
+ * definition and no drift to police.
+ *
+ * Chosen to match where the industry converged rather than inventing our own
+ * (UI.md §6a): the intersection of Google Meet, Grain and Granola's templates.
+ * `Open questions` earns its place structurally — an unresolved thread
+ * recorded as a question cannot become a fabricated decision.
+ */
+export const SUMMARY_SECTION_NAMES = [
+  'Summary',
+  'Decisions',
+  'Action items',
+  'Discussion',
+  'Open questions',
+] as const
+
+export type SummarySection = (typeof SUMMARY_SECTION_NAMES)[number]
+
+/** A stored summary, as read back from notes.md. */
+export interface StoredSummary {
+  sections: Partial<Record<SummarySection, string>>
+  generatedAt: string | null
+  provider: string | null
 }
 
 export interface PermissionState {

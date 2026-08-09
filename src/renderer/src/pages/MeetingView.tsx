@@ -1,8 +1,56 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Session, Transcript } from '@shared/types'
+import type { ProviderConfig, ProviderId, Session, Transcript } from '@shared/types'
+import { SummaryPane } from '../components/SummaryPane'
 import { TranscriptDrawer } from '../components/TranscriptDrawer'
 import { useDrawerState } from '../hooks/useDrawerState'
+import { useSummary } from '../hooks/useSummary'
 import { findTurnAt, mergeTurns } from '../lib/turns'
+
+/** Shown in the button tooltip and the provenance line, so it has to be a name
+ * the user would recognise from the outside world, not our internal id. */
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  ollama: 'Ollama',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+}
+
+/**
+ * The provider that would actually run, or null if none would.
+ *
+ * Re-read whenever a summary run ends, because auto-detect can select Ollama
+ * in the background after this window has already loaded — without that, a
+ * user who starts Ollama and comes back finds the button still disabled with
+ * no way to discover why.
+ */
+function useActiveProvider(): ProviderConfig | null {
+  const [provider, setProvider] = useState<ProviderConfig | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      const [providers, settings] = await Promise.all([
+        window.oratio.ai.providers(),
+        window.oratio.settings.get(),
+      ])
+      if (cancelled) return
+      const active = providers.find((p) => p.id === settings.activeProvider && p.enabled)
+      // A cloud provider with no key in the Keychain cannot run, and offering
+      // the button anyway would produce an error at click time instead of an
+      // explanation now.
+      const usable = active && (active.id === 'ollama' || active.hasApiKey) ? active : null
+      setProvider(usable ?? null)
+    }
+
+    void load()
+    const off = window.oratio.on.aiDone(() => void load())
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
+
+  return provider
+}
 
 interface Props {
   session: Session
@@ -23,6 +71,12 @@ export function MeetingView({ session }: Props): React.JSX.Element {
   const [activeMs, setActiveMs] = useState<number | null>(null)
   const [revealTurn, setRevealTurn] = useState<number | null>(null)
   const drawer = useDrawerState(sessionId)
+  const summary = useSummary(sessionId)
+  const provider = useActiveProvider()
+
+  const cloud = provider !== null && provider.id !== 'ollama'
+  const providerLabel = provider ? PROVIDER_LABELS[provider.id] : null
+  const canSummarize = provider !== null && transcript !== null
 
   /**
    * Merged once per transcript and shared with the drawer below.
@@ -88,6 +142,19 @@ export function MeetingView({ session }: Props): React.JSX.Element {
     })
   }, [sessionId])
 
+  // ⌘E — the shortcut shown on the button. Bound on window rather than the
+  // textarea so it works while the transcript drawer has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'e' || !(e.metaKey || e.ctrlKey)) return
+      e.preventDefault()
+      if (summary.status === 'running') summary.cancel()
+      else if (canSummarize) summary.summarize()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [summary, canSummarize])
+
   const onActiveTime = useCallback((ms: number | null) => setActiveMs(ms), [])
   const onRevealDone = useCallback(() => setRevealTurn(null), [])
 
@@ -125,6 +192,43 @@ export function MeetingView({ session }: Props): React.JSX.Element {
             {summaryLine(session, turns.length)}
           </p>
         </div>
+
+        {/*
+          Disabled rather than hidden when there is nothing to summarise. A
+          button that appears once transcription finishes would be a control
+          the user never learns exists; one that is visibly unavailable, with
+          the reason in its tooltip, teaches the sequence.
+        */}
+        <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {summary.status === 'running' ? (
+            <button
+              type="button"
+              onClick={summary.cancel}
+              className="rounded-md border border-(--color-line) px-2.5 py-1 text-[11px] text-(--color-ink-dim) hover:bg-(--color-raised)"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={summary.summarize}
+              disabled={!canSummarize}
+              title={
+                canSummarize
+                  ? cloud
+                    ? `Sends this transcript to ${providerLabel}`
+                    : `Summarises locally with ${providerLabel}`
+                  : transcript
+                    ? 'No summariser configured — see Settings'
+                    : 'Available once this meeting has been transcribed'
+              }
+              className="rounded-md border border-(--color-line) px-2.5 py-1 text-[11px] text-(--color-ink-dim) hover:bg-(--color-raised) disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              {summary.hasSummary ? 'Summarise again' : 'Summarise'}
+              <span className="ml-1.5 text-(--color-ink-faint)">⌘E</span>
+            </button>
+          )}
+        </div>
       </header>
 
       {/*
@@ -133,20 +237,38 @@ export function MeetingView({ session }: Props): React.JSX.Element {
         on purpose: a sibling would reflow the textarea on every pointer event
         of a drag, and reflowing a large text field at pointer rate is exactly
         the kind of work UI.md §0 says never to put on a drag path.
+
+        The column scrolls only once a summary exists. Without one the textarea
+        fills the pane and behaves exactly as it did before — the writing
+        surface does not shrink to make room for a feature the user has not
+        used.
       */}
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Jot down what matters. Your notes guide the summary."
           spellCheck
-          className="h-full w-full resize-none bg-transparent px-5 pb-12 text-[13px] leading-relaxed text-(--color-ink) outline-none placeholder:text-(--color-ink-faint)"
+          className="w-full resize-none bg-transparent px-5 text-[13px] leading-relaxed text-(--color-ink) outline-none placeholder:text-(--color-ink-faint)"
           style={{
+            // Grows with the text once there is a summary below it, so the
+            // two read as one document rather than a box above a panel.
+            height: summary.hasSummary || summary.status === 'running' ? 'auto' : '100%',
+            minHeight: summary.hasSummary ? '8rem' : undefined,
             // Reserve the closed handle's height so the last line of notes is
             // never hidden behind it.
-            paddingBottom: `calc(${(drawer.fraction * 100).toFixed(2)}% + 3rem)`,
+            paddingBottom: summary.hasSummary
+              ? '1rem'
+              : `calc(${(drawer.fraction * 100).toFixed(2)}% + 3rem)`,
           }}
         />
+
+        <SummaryPane summary={summary} cloud={cloud} providerLabel={providerLabel} />
+
+        {/* Clears the drawer handle at the foot of the scrolled column. */}
+        {summary.hasSummary && (
+          <div style={{ height: `calc(${(drawer.fraction * 100).toFixed(2)}% + 3rem)` }} />
+        )}
       </div>
 
       <TranscriptDrawer

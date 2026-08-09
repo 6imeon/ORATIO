@@ -13,6 +13,27 @@ for what has to land first.
 
 ### Added
 
+- **Meetings can be summarised, and the summary is yours to undo.** Press
+  `⌘E` or the Summarise button and the model expands your notes into five
+  sections — Summary, Decisions, Action items, Discussion, Open questions —
+  streaming into the page as they are written rather than appearing all at once
+  a minute later. Your notes are the outline: write "pricing concerns" and the
+  summary pulls every pricing exchange out of the transcript.
+  - **Black text is yours, grey text is the model's.** The provenance of every
+    sentence is visible without a badge or a mode, and the AI half is not
+    editable — which is what keeps the distinction meaning anything.
+  - **"Reset to my notes" is non-destructive by construction.** `notes.md` now
+    holds the two halves as separate fields, so removing the summary cannot
+    reach your writing, and your writing cannot overwrite the summary.
+  - **Cancel keeps what arrived.** Stopping a summary mid-stream keeps the
+    sections already written rather than throwing away work you watched appear.
+  - **Ollama is auto-detected and preferred**, so with it installed the whole
+    app is local — audio, transcript *and* summary — and the privacy claim
+    needs no asterisk. A cloud provider is never selected for you.
+  - **The UI says where your text goes**, on the summary itself and in
+    Settings: "stayed on this Mac" for a local run, and the provider's name
+    when it did not.
+
 - **The menu bar carries the whole app.** With no Dock icon, the tray is the
   only always-visible surface, so it now does real work: a native `Menu` (never
   a popover — AppKit draws it instantly, where a popover needs a live renderer
@@ -95,6 +116,21 @@ for what has to land first.
 
 ### Fixed
 
+- **Typing after generating a summary would have destroyed it.** `notes.md`
+  was read and written as one opaque blob, so the notes editor's autosave —
+  which fires 600 ms after every keystroke — wrote the file back without the
+  summary. The write succeeded, so nothing reported a problem. The file is now
+  parsed into the user's half and the model's half, and each can only write its
+  own.
+- **Two summaries of the same meeting could run at once and race on the
+  file.** The guard checked a map before its first `await` but populated it
+  several awaits later, so two calls a millisecond apart — a double-click, or
+  the window and the tray both asking — both got through. The slot is now
+  claimed synchronously.
+- **Cancelling a summary threw away everything that had streamed.** Aborting
+  the request rejects the in-flight read, so the function throws instead of
+  returning, and the partial text went with it — on precisely the path where
+  the user had been watching it arrive.
 - **The menu-bar icon did not exist, so the tray was invisible.**
   `resources/` was empty and `nativeImage.createFromPath` returns an *empty
   image* rather than throwing on a missing file. With no Dock icon and the

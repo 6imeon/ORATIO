@@ -625,6 +625,31 @@ and truncates longer input **from the front**, with no error anywhere. A
 tail of the conversation while reporting success. Now set to 32 768 — about
 two hours of speech.
 
+**[verified in phase 8]** The request body is asserted against a fake Ollama
+that records what we send: `num_ctx` 32 768, `temperature` 0.2, and the
+transcript positioned *after* the instructions. That proves what leaves this
+app, not what the server does with it — no Ollama is installed on the dev
+machine, so whether a real server honours the setting is open question #7.
+
+### Where the summary lives **[settled in phase 8]**
+
+In `notes.md`, in the same file as the user's notes — one meeting, one record,
+and it syncs and greps with everything else for free. But that only works if
+the two halves are separable again on read, because the notes editor autosaves
+into that file 600 ms after every keystroke. Written naively, generating a
+summary and then typing one character silently erases it.
+
+So `notes.md` parses into `{ userNotes, summary }` and re-renders from those
+two fields. The boundary is an explicit `<!-- oratio:summary -->` marker —
+invisible in every Markdown renderer, and unambiguous in a way a `---` rule or
+a heading would not be. This is what makes "Reset to my notes" non-destructive
+*by construction* rather than by care: clearing one field cannot reach the
+other even if the calling code is wrong.
+
+**A partial summary is kept.** Cancelling mid-stream persists what arrived
+rather than discarding it — the user watched that text appear, and one click
+removes it if they don't want it.
+
 ---
 
 ## 7. Settings

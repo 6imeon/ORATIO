@@ -24,7 +24,8 @@ rule is: **every phase ends in something you can run and judge.**
 | VAD wrapper + hallucination filter | **Verified against real audio** (phase 2) |
 | System audio (AudioTee) | Built; **byte format corrected to Int16** (phase 3) |
 | SQLite FTS5 index | **Moved to its own `utilityProcess`; rebuild-by-rescan verified** (phase 5) |
-| AI providers + prompt + section parser | Built and typechecked; never called |
+| AI providers + prompt + section parser | **Wired and verified** — streaming, cancel, `num_ctx` against a fake Ollama (phase 8) |
+| `notes.md` document model | **Built and verified** — the user's notes and the AI summary are separate fields, so neither can overwrite the other (phase 8) |
 | Tray | **Built and verified** — three states, Recent, Settings, global shortcut; the icon asset was missing entirely (phase 7) |
 | Renderer | **Layout J built and verified** (phase 6); Settings is read-only until phase 9 |
 | Mic capture | **Built and verified** — worklet → port → WAV, lossless (phase 3) |
@@ -33,8 +34,10 @@ rule is: **every phase ends in something you can run and judge.**
 | **Recording controller** | **Built and verified end to end** (phase 4) |
 | **Index worker** | **Built and verified** — tray-freeze measured, DB deleted and recovered (phase 5) |
 
-**1 of the request/response IPC channels has no handler** — `AI_SUMMARIZE`,
-which phase 8 wires. `NAV_PENDING` was added in phase 7 and is handled in
+**Every request/response IPC channel now has a handler.** `AI_SUMMARIZE` was
+the last gap and phase 8 wired it, alongside three new channels it needed:
+`AI_CANCEL`, `AI_SUMMARY_GET` and `AI_SUMMARY_CLEAR`. `NAV_PENDING` was added
+in phase 7 and is handled in
 `index.ts` rather than `registerIpc`, because it reads window state. `RECORDING_START`, `RECORDING_STOP`, `RECORDING_STATE`
 and `SESSION_GET` were the phase 4 gap and are now handled. (The `EVENTS`
 channels are main→renderer pushes and have no handler by design.)
@@ -608,19 +611,94 @@ leaves start/stop working, and a first run with no sessions shows no empty
 
 ---
 
-## Phase 8 — Summarisation
+## Phase 8 — Summarisation ✅
 
-Prompt and parser are already written and typechecked. This is wiring.
+*Ends in:* a meeting's notes can be expanded into a record, locally, and undone.
 
-- [ ] `AI_SUMMARIZE` handler; stream `AI_TOKEN`
-- [ ] Route tokens through `createSectionParser()` into the five sections
-- [ ] Render in J: grey AI text under each black user note (UI.md §6a)
-- [ ] "Reset to my notes" — non-destructive, always
-- [ ] Write summary into `notes.md`; it is a plain file like everything else
-- [ ] Ollama auto-detect; **verify `num_ctx: 32768` is actually applied** — the 2048 default silently truncates from the front
-- [ ] Keys via `safeStorage` → Keychain; `hasApiKey` sends presence, not the key
-- [ ] Say plainly in the UI when text leaves the machine
-- [ ] Cancel mid-stream
+Prompt and parser were already written and typechecked. This was billed as
+wiring; it was not — see below.
+
+- [x] `AI_SUMMARIZE` handler; stream `AI_TOKEN`
+- [x] Route tokens through `createSectionParser()` into the five sections
+- [x] Render in J: grey AI text under each black user note (UI.md §6a)
+- [x] "Reset to my notes" — non-destructive, always
+- [x] Write summary into `notes.md`; it is a plain file like everything else
+- [x] Ollama auto-detect; **verify `num_ctx: 32768` is actually applied** — the 2048 default silently truncates from the front
+- [x] Keys via `safeStorage` → Keychain; `hasApiKey` sends presence, not the key — already true from phase 0, reused unchanged
+- [x] Say plainly in the UI when text leaves the machine
+- [x] Cancel mid-stream
+
+### What the build actually found
+
+**The autosave would have eaten every summary.** The checklist asks for the
+summary in `notes.md` and for a non-destructive reset, and those two are in
+direct conflict as long as `notes.md` is an opaque blob: `SESSION_NOTES_GET`
+returned the whole file into the textarea and `SESSION_NOTES_SET` wrote the
+textarea back over the whole file. Generate a summary, type one character, and
+600 ms later the autosave writes the file without it. The write succeeds, so
+nothing anywhere reports a problem.
+
+The fix is `notesDoc.ts`: `notes.md` is parsed into `{ userNotes, summary }`
+and re-rendered from those two fields, so the textarea can only ever write its
+own half. That also makes "Reset to my notes" non-destructive *by
+construction* rather than by care — clearing one field cannot reach the other
+even if the calling code is wrong. The boundary is an explicit HTML-comment
+marker rather than a heuristic, because a parser that guesses wrong here
+destroys the user's writing.
+
+**`renderNotes` had never been called.** It was written in an early phase and
+had zero callers, so `notes.md` had no frontmatter at all in practice. Phase 8
+is where the file format actually got settled; `renderNotesDoc` replaces it.
+
+**The concurrency guard did not guard anything.** `if (running.has(id)) throw`
+followed by an awaited setup excludes nothing: `async` yields at its first
+await, so two calls a millisecond apart — a double-click, or the window and the
+tray both asking — both passed the check before either registered, then
+streamed into the same file and raced on the write. Verified by the harness,
+which caught two `summary complete` lines for one session. The slot is now
+claimed synchronously, in the same turn as the test.
+
+**Cancel discarded exactly the work the user was watching.** Aborting a `fetch`
+rejects the in-flight read, so `runSummarize` *throws* rather than returning —
+its return value is unreachable on the one path where a partial summary
+exists. The accumulator moved into the caller, outside the `try`, so what
+streamed before the cancel survives.
+
+**Ollama is not installed on this machine**, so `num_ctx` could not be checked
+against the real server. It is verified against a fake Ollama that records the
+request body — which proves *we send* 32 768 rather than the 2 048 default, but
+not that the server honours it. Re-check against a real Ollama when one is
+available; the failure mode is a summary that silently describes only the tail
+of a long meeting.
+
+### Verification
+
+150 checks, all passing, in three harnesses:
+
+- **63 pure-module checks** — the `notes.md` round trip, the autosave-clobber
+  scenario, reset, damaged and hand-edited files, frontmatter that must not
+  accumulate across saves, and the section parser against streams chopped into
+  1-, 3-, 4-, 7- and 500-character tokens (a `§§` marker splits across deltas).
+- **49 checks in a real Electron main process**, driving the actual registered
+  IPC handlers: streaming, persistence, the autosave interaction, reset,
+  cancel-and-keep, and degradation — no provider, an unreachable Ollama, an
+  untranscribed session, and the double-start above.
+- **38 checks against the real renderer**, driving the real React UI: sections
+  appearing *while* the stream runs rather than in one lump at the end, the
+  `§§` marker never reaching the screen, "Reset to my notes" being reachable
+  and leaving the notes intact both on screen and on disk, and the disabled
+  states explaining themselves.
+
+The grey-vs-black provenance diff is asserted quantitatively — AI text at
+oklch lightness 0.70 against the user's 0.93 on a 0.19 ground, checked as
+"closer to the background than the user's own words" so it holds in both
+themes. A silently identical pair would look exactly like a working one.
+
+One harness bug worth recording: the first version wrote its fake Ollama URL
+into the *real* `settings.json`, because `app.setPath('userData', …)` had not
+been called. It corrupted the user profile and poisoned the harness's own next
+run. Harnesses that boot the real `index.ts` must redirect `userData` before
+anything reads it.
 
 ---
 
@@ -657,7 +735,8 @@ Prompt and parser are already written and typechecked. This is wiring.
 | 3 | Does sherpa expose `condition_on_previous_text`? | Repeat-loops in long meetings | Check in phase 2 |
 | 4 | ~~Is `content-visibility` enough for a 2-hour transcript?~~ | Whether ⌘F and select-all survive | **Settled in phase 6: yes.** 1 334 turns all in the DOM, 40 scroll+layout passes in 1 ms. No JS virtualization, so ⌘F and select-all survive |
 | 5 | Does AudioTee report mid-stream sample-rate changes? | Silent pitch-shifted garbage | Test in phase 3 |
-| 6 | At what duration does single-pass summarisation degrade? | When chunking becomes necessary | Test in phase 8 |
+| 6 | At what duration does single-pass summarisation degrade? | When chunking becomes necessary | **Still open after phase 8** — no Ollama on the dev machine, so this needs a real model and real meetings. `num_ctx: 32768` (~2 h of speech) is verified as *sent*; whether quality holds at that length is unmeasured |
+| 7 | Does a real Ollama honour `num_ctx: 32768`? | Silent front-truncation of long meetings | Re-check when Ollama is installed; the fake server proves only what we send |
 
 ---
 
@@ -681,5 +760,5 @@ Not in v1, and each has a reason:
 **Model → ASR → mic → recording → index → UI(J) → tray → AI → settings → hardening.**
 
 Phases 1–4 are the critical path and strictly sequential; each is unusable
-without its predecessor. Phases 5, 6 and 7 are done. Phases 8 and 9 are parallelisable
-now that 4 has landed. Phase 10 gates any release.
+without its predecessor. Phases 5, 6, 7 and 8 are done. Phase 9 is next, and
+phase 10 gates any release.

@@ -1,8 +1,17 @@
-import { ipcMain, dialog, shell, systemPreferences } from 'electron'
+import { ipcMain, dialog, shell, systemPreferences, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import log from 'electron-log/main'
-import { IPC, EVENTS, type PermissionState, type StartRecordingOptions } from '@shared/ipc'
+import {
+  IPC,
+  EVENTS,
+  type AIDoneEvent,
+  type AITokenEvent,
+  type PermissionState,
+  type StartRecordingOptions,
+  type StoredSummary,
+  type SummarySection,
+} from '@shared/ipc'
 import { MODELS } from '@shared/models'
 import type { ModelId, Settings } from '@shared/types'
 import type { MacAudioCapture } from '../audio/MacAudioCapture'
@@ -20,6 +29,8 @@ import {
   discardSessionAudio,
   sessionDir,
 } from '../storage/vault'
+import { parseNotes, renderNotesDoc } from '../storage/notesDoc'
+import { resolveProvider, runSummarize } from '../ai/Summarizer'
 import { loadSettings, saveSettings, setApiKey, hasApiKey } from '../storage/settings'
 
 interface Deps {
@@ -97,14 +108,36 @@ export function registerIpc(deps: Deps): void {
     return readTranscript(sessionDir(settings.vaultPath, sessionId))
   })
 
+  /**
+   * The user's half of notes.md — never the summary.
+   *
+   * Both sides of this pair go through `parseNotes`/`renderNotesDoc` rather
+   * than reading and writing the file whole. That is load-bearing: the
+   * renderer autosaves the textarea 600 ms after every keystroke, so a `SET`
+   * that wrote its argument over the entire file would erase the AI summary
+   * the moment the user touched a key after generating one — and, because the
+   * write succeeds, with no error anywhere.
+   */
   ipcMain.handle(IPC.SESSION_NOTES_GET, async (_e, sessionId: string) => {
     const settings = await loadSettings()
-    return readNotes(sessionDir(settings.vaultPath, sessionId))
+    const doc = parseNotes(await readNotes(sessionDir(settings.vaultPath, sessionId)))
+    return doc.userNotes
   })
 
   ipcMain.handle(IPC.SESSION_NOTES_SET, async (_e, sessionId: string, markdown: string) => {
     const settings = await loadSettings()
-    await writeNotes(sessionDir(settings.vaultPath, sessionId), markdown)
+    const dir = sessionDir(settings.vaultPath, sessionId)
+    const [meta, doc] = await Promise.all([readMeta(dir), readNotes(dir).then(parseNotes)])
+
+    await writeNotes(
+      dir,
+      renderNotesDoc({
+        title: meta?.title ?? sessionId,
+        startedAt: meta?.startedAt ?? new Date().toISOString(),
+        durationSeconds: meta?.durationSeconds ?? 0,
+        doc: { ...doc, userNotes: markdown },
+      }),
+    )
   })
 
   ipcMain.handle(IPC.SESSION_DELETE, async (_e, sessionId: string) => {
@@ -260,6 +293,191 @@ export function registerIpc(deps: Deps): void {
         ...p,
         hasApiKey: p.id === 'ollama' ? undefined : await hasApiKey(p.id),
       })),
+    )
+  })
+
+  /**
+   * One summary run per session, tracked so it can be cancelled.
+   *
+   * Keyed by session rather than a single global: summarising one meeting
+   * while reading another is ordinary use, and a single slot would silently
+   * abort the first when the second started.
+   */
+  const running = new Map<string, AbortController>()
+
+  ipcMain.handle(IPC.AI_SUMMARIZE, async (e, sessionId: string) => {
+    // Claimed SYNCHRONOUSLY, before the first await.
+    //
+    // A check followed by an awaited setup would not exclude anything: `async`
+    // yields at its first await, so two calls a millisecond apart — a
+    // double-click, or the window and the tray both asking — would both pass
+    // the check before either registered, then stream into the same file and
+    // race on the write. The slot has to be taken in the same synchronous turn
+    // as the test.
+    if (running.has(sessionId)) throw new Error('This meeting is already being summarised')
+    const controller = new AbortController()
+    running.set(sessionId, controller)
+
+    try {
+      return await summarizeSession(sessionId, controller)
+    } finally {
+      running.delete(sessionId)
+    }
+  })
+
+  /**
+   * The body of AI_SUMMARIZE, split out so the handler above stays synchronous
+   * up to the point where it claims the session.
+   */
+  async function summarizeSession(sessionId: string, controller: AbortController): Promise<void> {
+    const settings = await loadSettings()
+    const provider = await resolveProvider(settings)
+    if (!provider) {
+      throw new Error(
+        'No summariser is configured. Install Ollama for a fully local summary, or add an API key in Settings.',
+      )
+    }
+    if (!(await provider.isAvailable())) {
+      throw new Error(
+        provider.id === 'ollama'
+          ? 'Ollama is not responding. Start it and try again.'
+          : `${provider.id} is not reachable. Check the API key in Settings.`,
+      )
+    }
+
+    const dir = sessionDir(settings.vaultPath, sessionId)
+    const [meta, transcript, raw] = await Promise.all([
+      readMeta(dir),
+      readTranscript(dir),
+      readNotes(dir),
+    ])
+
+    // The transcript is the input, so there is nothing to summarise without
+    // one. This is reachable: the button is live on a session still in the
+    // transcription queue.
+    if (!transcript || transcript.segments.length === 0) {
+      throw new Error('This meeting has not been transcribed yet.')
+    }
+
+    const doc = parseNotes(raw)
+
+    // Sent to every window, not just the caller's. A summary started from one
+    // window and watched from another is normal in a menu-bar app, and the
+    // sender may well be closed before the stream finishes.
+    const emit = (channel: string, payload: unknown): void => {
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.webContents.isDestroyed()) w.webContents.send(channel, payload)
+      }
+    }
+
+    /**
+     * Accumulated outside the try, so a cancel can still persist what arrived.
+     *
+     * Aborting a `fetch` rejects the in-flight read, so `runSummarize` throws
+     * rather than returning — its return value is unreachable on exactly the
+     * path where the user stopped a summary they were watching fill in. Held
+     * here, the partial survives that throw.
+     */
+    const sections: Partial<Record<SummarySection, string>> = {}
+
+    const persist = async (): Promise<void> => {
+      await writeNotes(
+        dir,
+        renderNotesDoc({
+          title: meta?.title ?? sessionId,
+          startedAt: meta?.startedAt ?? new Date().toISOString(),
+          durationSeconds: meta?.durationSeconds ?? 0,
+          doc: {
+            ...doc,
+            summary: sections,
+            generatedAt: new Date().toISOString(),
+            provider: provider.id,
+          },
+        }),
+      )
+    }
+
+    try {
+      await runSummarize(
+        provider,
+        {
+          title: meta?.title ?? sessionId,
+          transcript,
+          userNotes: doc.userNotes,
+        },
+        {
+          onDelta: (section, delta) => {
+            sections[section] = (sections[section] ?? '') + delta
+            emit(EVENTS.AI_TOKEN, { sessionId, section, delta } satisfies AITokenEvent)
+          },
+        },
+        controller.signal,
+      )
+
+      for (const key of Object.keys(sections) as SummarySection[]) {
+        sections[key] = sections[key]?.trim()
+      }
+
+      await persist()
+      emit(EVENTS.AI_DONE, { sessionId, status: 'complete' } satisfies AIDoneEvent)
+      log.info(`[ai] summary complete for ${sessionId} via ${provider.id}`)
+    } catch (err) {
+      // An abort surfaces as a thrown DOMException from fetch rather than a
+      // clean return, so it has to be classified here or a deliberate cancel
+      // would be reported to the user as a failure.
+      if (controller.signal.aborted) {
+        // A partial summary the user stopped is still theirs, and throwing
+        // away work they watched arrive would be worse than keeping it.
+        // "Reset to my notes" removes it in one click.
+        for (const key of Object.keys(sections) as SummarySection[]) {
+          sections[key] = sections[key]?.trim()
+        }
+        if (Object.keys(sections).length > 0) await persist()
+        emit(EVENTS.AI_DONE, { sessionId, status: 'cancelled' } satisfies AIDoneEvent)
+        log.info(`[ai] summary cancelled for ${sessionId}`)
+        return
+      }
+
+      const message = err instanceof Error ? err.message : String(err)
+      emit(EVENTS.AI_DONE, { sessionId, status: 'failed', error: message } satisfies AIDoneEvent)
+      log.warn(`[ai] summary failed for ${sessionId}`, err)
+      throw err
+    }
+  }
+
+  ipcMain.handle(IPC.AI_CANCEL, (_e, sessionId: string) => {
+    running.get(sessionId)?.abort()
+  })
+
+  ipcMain.handle(IPC.AI_SUMMARY_GET, async (_e, sessionId: string): Promise<StoredSummary> => {
+    const settings = await loadSettings()
+    const doc = parseNotes(await readNotes(sessionDir(settings.vaultPath, sessionId)))
+    return { sections: doc.summary, generatedAt: doc.generatedAt, provider: doc.provider }
+  })
+
+  /**
+   * "Reset to my notes" — drop the summary, keep everything the user wrote.
+   *
+   * Non-destructive by construction rather than by care: the summary and the
+   * notes are separate fields of the parsed document, so clearing one cannot
+   * reach the other even if this code is wrong.
+   */
+  ipcMain.handle(IPC.AI_SUMMARY_CLEAR, async (_e, sessionId: string) => {
+    const settings = await loadSettings()
+    const dir = sessionDir(settings.vaultPath, sessionId)
+    const [meta, doc] = await Promise.all([
+      readMeta(dir),
+      readNotes(dir).then(parseNotes),
+    ])
+
+    await writeNotes(
+      dir,
+      renderNotesDoc({
+        title: meta?.title ?? sessionId,
+        startedAt: meta?.startedAt ?? new Date().toISOString(),
+        durationSeconds: meta?.durationSeconds ?? 0,
+        doc: { ...doc, summary: {}, generatedAt: null, provider: null },
+      }),
     )
   })
 

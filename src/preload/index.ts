@@ -2,8 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, EVENTS } from '@shared/ipc'
 import { AUDIO_PORT_CHANNEL, type AudioPortMessage } from '@shared/audioPort'
 import type {
+  AIDoneEvent,
+  AITokenEvent,
   NavTarget,
   PermissionState,
+  StoredSummary,
   TranscriptionProgress,
   StartRecordingOptions,
   StartRecordingResult,
@@ -160,8 +163,22 @@ const api = {
     providers: (): Promise<ProviderConfig[]> => ipcRenderer.invoke(IPC.AI_PROVIDERS),
     setKey: (provider: 'anthropic' | 'openai', key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.AI_SET_KEY, provider, key),
+    /**
+     * Summarise a meeting. Resolves when the stream ends; the text itself
+     * arrives on `on.aiToken` as it is generated, so the UI fills in live
+     * rather than appearing all at once after a minute of nothing.
+     */
     summarize: (sessionId: string): Promise<void> =>
       ipcRenderer.invoke(IPC.AI_SUMMARIZE, sessionId),
+    /** Stop a run in flight. Whatever streamed so far is kept. */
+    cancel: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.AI_CANCEL, sessionId),
+    /** The stored summary, read back from notes.md. */
+    summary: (sessionId: string): Promise<StoredSummary> =>
+      ipcRenderer.invoke(IPC.AI_SUMMARY_GET, sessionId),
+    /** "Reset to my notes" — drops the summary, keeps what the user wrote. */
+    clearSummary: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.AI_SUMMARY_CLEAR, sessionId),
   },
 
   permissions: {
@@ -200,7 +217,10 @@ const api = {
       subscribe(EVENTS.TRANSCRIPTION_PARTIAL, cb),
     modelProgress: (cb: (p: ModelState) => void) => subscribe(EVENTS.MODEL_PROGRESS, cb),
     sessionChanged: (cb: (id: string) => void) => subscribe(EVENTS.SESSION_CHANGED, cb),
-    aiToken: (cb: (token: string) => void) => subscribe(EVENTS.AI_TOKEN, cb),
+    /** A summary delta, tagged with the section it belongs to. */
+    aiToken: (cb: (e: AITokenEvent) => void) => subscribe(EVENTS.AI_TOKEN, cb),
+    /** A summary run ended — completed, cancelled, or failed. */
+    aiDone: (cb: (e: AIDoneEvent) => void) => subscribe(EVENTS.AI_DONE, cb),
     /** The tray asking this window to show a session or the Settings pane. */
     navigate: (cb: (t: NavTarget) => void) => subscribe(EVENTS.NAVIGATE, cb),
   },

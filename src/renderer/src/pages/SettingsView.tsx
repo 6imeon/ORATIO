@@ -53,11 +53,28 @@ export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.El
               />
               <Row
                 label="Summarisation"
-                value={settings.activeProvider ?? 'Off'}
-                hint="Transcription is always local. A provider is only ever used to summarise finished text."
+                value={providerLabel(settings.activeProvider)}
+                hint={providerHint(settings.activeProvider)}
               />
             </dl>
           )}
+
+          {/*
+            Stated as a standing property of the app, not as a note attached to
+            the current provider — the guarantee does not change when the
+            provider does, and burying it in a hint would make it read as a
+            caveat rather than the design. Phase 9 adds the key fields below
+            this; the sentence stays wherever they land.
+          */}
+          <p className="mt-6 rounded-md bg-(--color-raised) px-3 py-2.5 text-xs leading-relaxed text-(--color-ink-dim)">
+            <strong className="font-semibold text-(--color-ink)">
+              Your audio and transcripts never leave this Mac.
+            </strong>{' '}
+            Recording and transcription are local, always — there is no cloud
+            transcription option and no fallback that uploads audio. A
+            summariser is the one exception, and only ever receives the
+            finished text of a meeting you explicitly ask it to summarise.
+          </p>
 
           <p className="mt-8 border-t border-(--color-line) pt-4 text-xs leading-relaxed text-(--color-ink-faint)">
             These are read-only for now — editing arrives with the model picker
@@ -67,6 +84,38 @@ export function SettingsView({ onClose }: { onClose: () => void }): React.JSX.El
       </div>
     </div>
   )
+}
+
+function providerLabel(id: Settings['activeProvider']): string {
+  switch (id) {
+    case 'ollama':
+      return 'Ollama (local)'
+    case 'anthropic':
+      return 'Anthropic'
+    case 'openai':
+      return 'OpenAI'
+    default:
+      return 'Off'
+  }
+}
+
+/**
+ * Says where a meeting's text goes, in the same words for every provider.
+ *
+ * "Local" and "leaves this Mac" are the only two answers that matter, and the
+ * user should not have to know that Ollama is a local server to work out which
+ * one they are getting.
+ */
+function providerHint(id: Settings['activeProvider']): string {
+  switch (id) {
+    case 'ollama':
+      return 'Runs on this Mac. Nothing is sent anywhere.'
+    case 'anthropic':
+    case 'openai':
+      return 'Summaries only. The transcript of a meeting you summarise is sent to this provider over the network; audio never is.'
+    default:
+      return 'No summariser configured. Everything else works without one.'
+  }
 }
 
 function Row({
