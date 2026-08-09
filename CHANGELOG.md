@@ -13,6 +13,24 @@ for what has to land first.
 
 ### Added
 
+- **Apps can be kept out of the recording.** The system-audio tap was
+  all-or-nothing, so music playing during a meeting landed in the "them" track
+  and came back in the transcript as whatever the model made of the lyrics.
+  Settings → Recording now has an "Ignore these apps" list, picked from what is
+  currently open, and Spotify and Music are ignored by default.
+
+  It excludes rather than includes, because the two fail in opposite directions:
+  an app that is closed or silent simply is not excluded, whereas an include-list
+  would record nothing at all if you started before anyone spoke. Meeting apps
+  are deliberately not on the default list for the same reason.
+
+  Exclusion covers the whole app, not just its main process — Chrome plays audio
+  from three separate processes and Spotify runs seven, so excluding only the
+  obvious one would have looked like the setting doing nothing. If an excluded
+  app stops making sound at the exact moment recording starts, the tap is
+  restarted without exclusions rather than failing: a meeting with music in it
+  is a poor recording, but no recording at all is a lost meeting.
+
 - **Transcript audio has a real transport: play, pause, scrub, and speed.**
   Playback was previously click-a-line-to-hear-it with no way to stop it and no
   way to resume — clicking the line that was already playing restarted it. There

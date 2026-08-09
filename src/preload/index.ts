@@ -19,6 +19,7 @@ import type {
   ModelState,
   ProviderConfig,
   RecordingState,
+  RunningApp,
   SearchHit,
   Session,
   SessionMeta,
@@ -165,6 +166,8 @@ const api = {
     /** System Settings panes and https links only — see the handler. */
     openExternal: (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.SETTINGS_OPEN_EXTERNAL, url),
+    /** Foreground apps open right now, for the exclusion picker. */
+    runningApps: (): Promise<RunningApp[]> => ipcRenderer.invoke(IPC.SETTINGS_RUNNING_APPS),
   },
 
   models: {

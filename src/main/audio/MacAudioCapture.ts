@@ -13,6 +13,7 @@ import {
   type CaptureResult,
   type TrackResult,
 } from './AudioCapture'
+import { resolveExcludedPids } from './excludedApps'
 import { writeWavHeader, finalizeWavHeader } from './wav'
 
 /**
@@ -115,6 +116,26 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
   #tee: AudioTee | null = null
   #recording = false
 
+  /**
+   * Bundle IDs to keep out of the system track.
+   *
+   * A constructor argument rather than part of `CaptureOptions`, deliberately.
+   * Process exclusion is a Core Audio concept and this is the Core Audio
+   * implementation; Windows expresses the same intent through WASAPI process
+   * loopback, which selects a single process rather than subtracting a set.
+   * Putting it in the shared interface would export a macOS shape to a platform
+   * that does not have it.
+   *
+   * Read fresh on every `start()` via the getter, not captured once: the user
+   * can change the list between recordings without restarting the app.
+   */
+  readonly #excludedBundleIds: () => string[]
+
+  constructor(excludedBundleIds: () => string[] = () => []) {
+    super()
+    this.#excludedBundleIds = excludedBundleIds
+  }
+
   #mic: TrackWriter | null = null
   #system: TrackWriter | null = null
 
@@ -138,18 +159,47 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
     this.#mic = new TrackWriter(opts.micPath, onWriteError)
     this.#system = new TrackWriter(opts.systemPath, onWriteError)
 
-    // Ask AudioTee for exactly the format sherpa-onnx wants, so no
-    // resampling is needed anywhere downstream. binaryPath is passed
-    // explicitly because the package cannot locate itself inside an asar —
-    // see resolveAudioTeeBinary.
-    this.#tee = new AudioTee({
-      sampleRate: TARGET_SAMPLE_RATE,
-      binaryPath: resolveAudioTeeBinary(),
-    })
+    /**
+     * Resolve exclusions now, immediately before spawning.
+     *
+     * PIDs are only valid while their processes live, so this cannot be done
+     * any earlier and cannot be cached between recordings.
+     *
+     * Wrapped because a recording must never fail over an exclusion: the worst
+     * case here is a meeting with music in the "them" track, which is a poor
+     * recording. Throwing instead would mean no recording at all.
+     */
+    let excludeProcesses: number[] = []
+    try {
+      excludeProcesses = await resolveExcludedPids(this.#excludedBundleIds())
+    } catch (err) {
+      log.warn('[audio] could not resolve excluded apps; recording all system audio', err)
+    }
 
+    /**
+     * Spawn the tap, and fall back to an unfiltered one if exclusions kill it.
+     *
+     * The race this closes: a PID is a Core Audio object when we probe it and
+     * has stopped being one microseconds later (the user quit the app, or it
+     * finished playing and released its object). AudioTee then fails to
+     * translate it and **exits**, taking the whole system track with it. No
+     * amount of care choosing PIDs can remove that window, so the fallback is
+     * what makes exclusions safe rather than merely usually-safe.
+     *
+     * Detected via the `error` event rather than a rejected `start()`:
+     * `start()` resolves normally even when the child has already died, so a
+     * try/catch here catches nothing and the session records an empty system
+     * track — the silent-success failure this codebase keeps meeting.
+     */
     let formatChecked = false
 
-    this.#tee.on('data', (chunk: { data: Buffer }) => {
+    /*
+     * Defined before the spawn and handed to it, so it is attached BEFORE the
+     * child starts writing — and re-attached to the replacement on the retry
+     * path. Attaching after `start()` would drop the opening buffers of every
+     * recording, and all of them on a retry.
+     */
+    const onData = (chunk: { data: Buffer }): void => {
       const samples = toFloat32(chunk.data)
 
       // Sample values live in -1..1 by definition. Anything outside it means
@@ -174,7 +224,9 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
       const peak = this.#system!.write(samples)
       this.emit('level', 'system', peak)
       this.emit('pcm', 'system', samples)
-    })
+    }
+
+    this.#tee = await this.#spawnTee(excludeProcesses, onData)
 
     this.#tee.on('error', (err: Error) => {
       log.error('[audio] system capture error', err)
@@ -183,10 +235,113 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
 
     this.#tee.on('log', (msg: unknown) => log.debug('[audiotee]', msg))
 
-    await this.#tee.start()
     this.#recording = true
     this.#startLivenessCheck()
     log.info('[audio] capture started')
+  }
+
+  /**
+   * Start a tap, retrying without exclusions if the exclusions killed it.
+   *
+   * Returns a *running* AudioTee. Started here rather than by the caller
+   * because failure has to be observed at start time — that is the only moment
+   * a retry is still possible.
+   */
+  async #spawnTee(
+    excludeProcesses: number[],
+    onData: (chunk: { data: Buffer }) => void,
+  ): Promise<AudioTee> {
+    /** Whether each instance has reported an error. See `create` below. */
+    const failures = new WeakMap<AudioTee, boolean>()
+
+    const create = (exclude: number[]): AudioTee => {
+      const instance = new AudioTee({
+        sampleRate: TARGET_SAMPLE_RATE,
+        // Passed explicitly because the package cannot locate itself inside an
+        // asar — see resolveAudioTeeBinary.
+        binaryPath: resolveAudioTeeBinary(),
+        // Omitted entirely when empty rather than passed as an empty array: an
+        // empty `--exclude-processes` flag is not the same thing as an absent
+        // one, and "exclude nothing" must mean the plain all-processes tap.
+        ...(exclude.length > 0 ? { excludeProcesses: exclude } : {}),
+      })
+      // Before start(), so no buffer is missed on either path.
+      instance.on('data', onData)
+
+      /**
+       * A permanent `error` sink, attached at creation and never removed.
+       *
+       * `AudioTee` is an EventEmitter, and an `error` event with no listener is
+       * *thrown* by Node — taking down the main process and the meeting with
+       * it. A failing tap emits at least twice: once for the stderr line and
+       * again when the child exits non-zero. The second arrives after the retry
+       * logic below has stopped watching, so without this the very failure this
+       * method exists to recover from would instead crash the app. Verified: it
+       * did, with "Unhandled 'error' event ... exited with code 1".
+       *
+       * Recording it on the instance rather than re-emitting here, because an
+       * abandoned instance's failure is expected and must not reach the user;
+       * the live instance gets a reporting listener from the caller.
+       */
+      failures.set(instance, false)
+      instance.on('error', () => failures.set(instance, true))
+      return instance
+    }
+
+    // Logged rather than inferred from the audio. A wrong exclusion list sounds
+    // identical to a right one until you notice what is missing, so the argv is
+    // the only place the truth is visible.
+    log.info('[audio] starting system tap', {
+      excludedPids: excludeProcesses.length > 0 ? excludeProcesses : 'none',
+    })
+
+    const tee = create(excludeProcesses)
+    await tee.start()
+
+    // Nothing to fall back to, so nothing to wait for.
+    if (excludeProcesses.length === 0) return tee
+
+    /*
+     * Wait for the tap to prove itself, one way or the other.
+     *
+     * `start()` resolves as soon as the child is spawned — measured at 2 ms —
+     * while a translation failure only surfaces when the child writes to stderr
+     * and exits, measured at 52-79 ms. Checking the flag immediately (or after
+     * a `setImmediate`) therefore always reads `false` and the retry never
+     * fires; that was the first version of this, and it silently recorded
+     * nothing.
+     *
+     * Resolved by the first audio buffer rather than by a fixed delay, so a
+     * working tap costs one buffer of latency instead of a hardcoded pause on
+     * every recording. The timeout is only a backstop for a tap that neither
+     * produces audio nor dies — genuine silence at the moment of starting.
+     */
+    let backstop: ReturnType<typeof setTimeout> | undefined
+    const outcome = await Promise.race([
+      new Promise<'ok'>((resolve) => tee.once('data', () => resolve('ok'))),
+      new Promise<'failed'>((resolve) => tee.once('error', () => resolve('failed'))),
+      new Promise<'quiet'>((resolve) => {
+        backstop = setTimeout(() => resolve('quiet'), TAP_PROOF_TIMEOUT_MS)
+      }),
+    ])
+    // Losing the race leaves the timer pending, which would hold the event loop
+    // briefly at quit for no reason.
+    clearTimeout(backstop)
+
+    if (outcome !== 'failed' && !failures.get(tee)) return tee
+
+    log.warn(
+      '[audio] system tap failed with exclusions; retrying without them. ' +
+        'An excluded app most likely stopped producing audio between being ' +
+        'resolved and the tap starting.',
+    )
+    // Nothing to tear down on the failed instance beyond this: it has already
+    // exited, which is what `failed` means.
+    await tee.stop().catch(() => {})
+
+    const plain = create([])
+    await plain.start()
+    return plain
   }
 
   /**
@@ -292,6 +447,19 @@ export class MacAudioCapture extends EventEmitter implements AudioCapture {
  * than one every tool reports as zero-length (ARCHITECTURE §3). 30 s is the
  * most anyone loses, at the cost of one 8-byte write.
  */
+/**
+ * How long a tap started WITH exclusions gets to prove it survived.
+ *
+ * Only reached when the tap produces neither audio nor an error — a genuinely
+ * silent machine at the moment of starting. Measured failures arrive at
+ * 52-79 ms, so 250 ms clears them comfortably while staying well inside the
+ * time it takes a user to notice the recording began.
+ *
+ * Not a delay on the common path: the race that uses this resolves on the first
+ * audio buffer, which normally arrives first.
+ */
+const TAP_PROOF_TIMEOUT_MS = 250
+
 const HEADER_PATCH_INTERVAL_MS = 30_000
 
 /**

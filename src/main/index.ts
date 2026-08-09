@@ -15,7 +15,7 @@ import { ModelManager } from './models/ModelManager'
 import { WorkerEngine } from './transcription/WorkerEngine'
 import { registerIpc } from './ipc'
 import { readMeta, readTranscript, listSessions, sessionDir } from './storage/vault'
-import { createTray, setRecordingState, setTranscribing } from './tray'
+import { createTray, registerTrayLifecycle, setRecordingState, setTranscribing } from './tray'
 
 log.initialize()
 log.transports.file.level = 'info'
@@ -358,7 +358,17 @@ void app.whenReady().then(async () => {
   // on main's thread freezes the tray — the one surface always on screen.
   const searchIndex = new IndexClient(join(app.getPath('userData'), 'index.sqlite'))
   indexClient = searchIndex
-  const capture = new MacAudioCapture()
+  /**
+   * The exclusion list, refreshed by the recording controller on each start.
+   *
+   * A holder rather than the `settings` snapshot above, which is read once at
+   * launch: a user who excludes an app in Settings expects it to apply to the
+   * next recording, not the next app launch. The controller already calls
+   * `loadSettings()` in `start()`, so this stays current without a second read
+   * or a settings dependency inside the capture implementation.
+   */
+  const excludedBundleIds = { current: settings.excludedBundleIds }
+  const capture = new MacAudioCapture(() => excludedBundleIds.current)
   const models = new ModelManager()
 
   // An install interrupted by a crash leaves a .tmp- directory behind. It is
@@ -400,6 +410,9 @@ void app.whenReady().then(async () => {
      * would block a perfectly working install.
      */
     hasModel: async () => (await models.list()).some((s) => s.status === 'ready'),
+    onExcludedBundleIds: (ids) => {
+      excludedBundleIds.current = ids
+    },
   }))
 
   // Before any handler can query it. A search arriving at a worker that has not
@@ -432,6 +445,9 @@ void app.whenReady().then(async () => {
     pendingNav = null
     return target
   })
+
+  // Inside whenReady(), never at module scope — see registerTrayLifecycle.
+  registerTrayLifecycle()
 
   createTray({
     recording,

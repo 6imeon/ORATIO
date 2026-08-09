@@ -970,23 +970,54 @@ ID, and AudioTee **exits** when translation fails — its README says so and
 `Utils.swift` throws. An include-list therefore breaks in exactly the moment
 that matters: you hit record in a Zoom waiting room before anyone has spoken,
 translation fails, and the recording dies at the start of the meeting. With an
-exclusion list, an app that is silent or absent simply is not excluded, and a
-meeting app nobody anticipated is still captured. Exclusion fails toward
+exclusion list, an app that is silent or absent contributes no PID to exclude,
+and a meeting app nobody anticipated is still captured. Exclusion fails toward
 recording too much; inclusion fails toward recording nothing.
 
-- [ ] `excludedBundleIds: string[]` in `Settings`, defaulting to Spotify and Music
-- [ ] Resolve bundle IDs → PIDs **at spawn time**, immediately before `MacAudioCapture.start()`
-- [ ] Drop any PID that does not translate; **never fail the recording over an exclusion**
-- [ ] Pass `--exclude-processes` only when the resolved list is non-empty — an empty flag is not the same as an absent one
-- [ ] Settings UI: list of apps to ignore, added from the apps currently playing audio
-- [ ] Keep the flag out of `AudioCapture` — it is a `MacAudioCapture` detail, and Windows WASAPI expresses this differently
+**Corrected while building this.** The plan above assumed a bad PID in an
+exclusion list is harmless. It is not: AudioTee translates every PID given to
+`--exclude-processes` and **exits if any one fails**, on the exclusion path just
+as on the inclusion path. Two measurements decided the implementation:
+
+- An app is a process *tree*, and only some of it is tappable. Spotify runs 7
+  processes of which **1** is a Core Audio object; Chrome runs 38 of which **3**
+  are. Excluding the whole tree kills the recording; excluding only the PID you
+  would name misses two thirds of Chrome's audio.
+- An app that has never played a sound has **no audio object at all** (verified
+  with Preview and TextEdit), so it cannot be excluded pre-emptively.
+
+Hence a small bundled C binary, `native/audio-processes.c`, which prints the
+PIDs Core Audio actually knows about; the exclusion list is the intersection of
+that with the app's process tree. `lsof` was tried as a shell-only substitute
+and rejected — measured against the real list it both invented PIDs and missed
+two of Chrome's three.
+
+- [x] `excludedBundleIds: string[]` in `Settings`, defaulting to Spotify and Music
+- [x] Resolve bundle IDs → PIDs **at spawn time**, immediately before `MacAudioCapture.start()`
+- [x] Drop any PID that does not translate; **never fail the recording over an exclusion**
+- [x] Pass `--exclude-processes` only when the resolved list is non-empty — an empty flag is not the same as an absent one
+- [x] Settings UI: list of apps to ignore, added from the apps currently playing audio
+- [x] Keep the flag out of `AudioCapture` — it is a `MacAudioCapture` detail, and Windows WASAPI expresses this differently
+- [x] Filter to PIDs Core Audio can name, via `resources/audio-processes`
+- [x] Retry once without exclusions if the tap dies anyway — closes the race where a PID stops being an audio object between resolving and spawning
 
 ### Verification
 
-- [ ] Record with Spotify playing and Spotify excluded → system track contains the meeting only
-- [ ] Record with Spotify excluded but **not running** → recording starts normally, no error
-- [ ] Record with an excluded app that is running but silent → starts normally (the translation-failure path)
-- [ ] Confirm the spawned argv by logging it, not by inferring it from the audio
+- [x] Record with Spotify playing and Spotify excluded → system track contains the meeting only *(peak 0.0000 excluded vs 0.4632 control, same byte count)*
+- [x] Record with Spotify excluded but **not running** → recording starts normally, no error
+- [x] Record with an excluded app that is running but silent → starts normally (the translation-failure path)
+- [x] Confirm the spawned argv by logging it, not by inferring it from the audio
+- [x] Forced-failure cases (untranslatable tree, dead PID) recover via the retry rather than recording nothing
+- [x] Probe is unpacked, executable and correct from inside a packaged `.app`
+
+**Timing note for anyone touching the retry.** `AudioTee.start()` resolves ~2 ms
+after spawn, but a translation failure only surfaces at 52–79 ms, and it arrives
+as an `error` *event* — `start()` still resolves. Checking for failure
+synchronously (or after a `setImmediate`) therefore always reads "fine" and the
+retry never fires. It races the first audio buffer against the error instead, so
+a healthy tap costs no added latency. A permanent `error` listener is attached
+at construction: a failing tap emits twice, and an unhandled `error` event on an
+EventEmitter takes down the main process — which it did, before that listener.
 
 ---
 

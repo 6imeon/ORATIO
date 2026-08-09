@@ -366,14 +366,30 @@ function elapsed(): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
 }
 
-app.on('will-quit', () => {
-  // Global shortcuts are process-wide OS registrations and are not released by
-  // the window closing. Left registered they can survive as a dead binding.
-  globalShortcut.unregisterAll()
-})
+/**
+ * Register the teardown handlers. Call once, from inside `whenReady()`.
+ *
+ * A function rather than two `app.on(...)` calls at module scope, which is what
+ * these were. Module scope works today, but only because of where rollup
+ * happens to place this module in the CommonJS bundle: anything evaluated there
+ * runs before Electron's runtime is initialised if the module is hoisted, and
+ * `app` is then `undefined` — CLAUDE.md build rule 4, which has already cost
+ * this project an invisible tray icon and a non-booting app.
+ *
+ * The ordering shifts when unrelated files change their imports, so the failure
+ * would arrive attached to some future edit that has nothing to do with the
+ * tray. Calling it explicitly removes the dependency on bundle layout entirely.
+ */
+export function registerTrayLifecycle(): void {
+  app.on('will-quit', () => {
+    // Global shortcuts are process-wide OS registrations and are not released by
+    // the window closing. Left registered they can survive as a dead binding.
+    globalShortcut.unregisterAll()
+  })
 
-app.on('before-quit', () => {
-  if (ticker) clearInterval(ticker)
-  tray?.destroy()
-  tray = null
-})
+  app.on('before-quit', () => {
+    if (ticker) clearInterval(ticker)
+    tray?.destroy()
+    tray = null
+  })
+}

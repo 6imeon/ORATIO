@@ -214,6 +214,13 @@ export interface ProviderConfig {
  */
 export type ThemePreference = 'system' | 'light' | 'dark'
 
+/** A running app, offered as a candidate for the system-track exclusion list. */
+export interface RunningApp {
+  bundleId: string
+  /** Display name, as it appears in the Dock. */
+  name: string
+}
+
 export interface Settings {
   /** Absolute path to the user's vault. All recordings live here. */
   vaultPath: string
@@ -239,6 +246,20 @@ export interface Settings {
    * default rather than remembering each time.
    */
   discardAudioByDefault: boolean
+  /**
+   * Apps whose audio is kept out of the system track, by bundle ID.
+   *
+   * The system tap is otherwise all-or-nothing, so music playing during a
+   * meeting lands in the "them" track and then in the transcript, as whatever
+   * ASR makes of song lyrics.
+   *
+   * Exclusion rather than inclusion, chosen on the failure mode: a process must
+   * be *currently producing audio* to be tappable, so an include-list breaks
+   * exactly when you hit record in a waiting room before anyone has spoken. An
+   * app that is silent or absent simply is not excluded, and a meeting app
+   * nobody anticipated is still captured.
+   */
+  excludedBundleIds: string[]
   launchAtLogin: boolean
   providers: ProviderConfig[]
   activeProvider: ProviderId | null

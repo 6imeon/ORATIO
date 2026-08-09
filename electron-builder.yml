@@ -29,6 +29,9 @@ asarUnpack:
   - '**/*.node'
   - '**/node_modules/audiotee/**'
   - '**/node_modules/sherpa-onnx-*/**'
+  # The Core Audio process-list probe. Same rule as the binaries above: it is
+  # exec'd, and nothing can be exec'd from inside an asar archive.
+  - 'resources/audio-processes'
 
 mac:
   category: public.app-category.productivity

@@ -33,6 +33,16 @@ export function defaultSettings(): Settings {
     // other person said — is one users cannot diagnose for themselves.
     removeSpeakerBleed: true,
     discardAudioByDefault: false,
+    /**
+     * Music players, because they are the common case and the one users would
+     * never think to configure: you put music on, forget it, and the transcript
+     * comes back with song lyrics attributed to the other participant.
+     *
+     * Meeting apps are deliberately absent — excluding one would silently
+     * record nothing of the meeting, which is the failure this feature exists
+     * to avoid causing.
+     */
+    excludedBundleIds: ['com.spotify.client', 'com.apple.Music'],
     launchAtLogin: false,
     providers: [
       { id: 'ollama', enabled: true, model: 'qwen3:4b', baseUrl: 'http://127.0.0.1:11434' },

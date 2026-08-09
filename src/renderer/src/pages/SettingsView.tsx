@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Settings, ThemePreference } from '@shared/types'
+import type { RunningApp, Settings, ThemePreference } from '@shared/types'
 import { ModelPicker } from '../components/ModelPicker'
 import { PermissionsPanel } from '../components/PermissionsPanel'
 import { ProviderSettings } from '../components/ProviderSettings'
@@ -129,6 +129,10 @@ export function SettingsView({
                   checked={settings.discardAudioByDefault}
                   onChange={(v) => void update({ discardAudioByDefault: v })}
                   hint="The default for new meetings; each one can still be changed before you record. Keeping audio is what lets you click a line of transcript and hear it."
+                />
+                <ExcludedApps
+                  bundleIds={settings.excludedBundleIds}
+                  onChange={(ids) => void update({ excludedBundleIds: ids })}
                 />
                 <Toggle
                   label="Open at login"
@@ -307,6 +311,126 @@ function SegmentedControl<T extends string>({
       </div>
       {hint && (
         <p className="mt-1.5 text-xs leading-relaxed text-(--color-ink-faint)">{hint}</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Apps whose audio is kept out of the recording.
+ *
+ * The candidate list is what is *running*, fetched when the picker opens
+ * rather than at mount: the moment you reach for this is usually the moment
+ * something is making noise, and an app launched since the settings screen
+ * opened must appear without a reload.
+ *
+ * Excluded apps stay listed even when they are not running — the list is a
+ * standing preference about future recordings, not a view of what is open now.
+ * Dropping Spotify from the UI because it happens to be closed would look like
+ * the setting had been forgotten.
+ */
+function ExcludedApps({
+  bundleIds,
+  onChange,
+}: {
+  bundleIds: string[]
+  onChange: (ids: string[]) => void
+}): React.JSX.Element {
+  const [candidates, setCandidates] = useState<RunningApp[] | null>(null)
+  const [picking, setPicking] = useState(false)
+
+  /**
+   * Display names for apps that are not running, so a closed app reads as
+   * "Spotify" rather than as its bundle ID.
+   *
+   * Seeded with the defaults because those are the two the user never chose
+   * and so has never seen named. Anything else falls back to the bundle ID,
+   * which is ugly but unambiguous.
+   */
+  const [names, setNames] = useState<Record<string, string>>({
+    'com.spotify.client': 'Spotify',
+    'com.apple.Music': 'Music',
+  })
+
+  const openPicker = useCallback(async (): Promise<void> => {
+    setPicking(true)
+    const apps = await window.oratio.settings.runningApps()
+    setCandidates(apps)
+    // Remember what each bundle ID is called, so it still reads properly after
+    // the app is quit.
+    setNames((prev) => {
+      const next = { ...prev }
+      for (const app of apps) next[app.bundleId] = app.name
+      return next
+    })
+  }, [])
+
+  const available = (candidates ?? []).filter((app) => !bundleIds.includes(app.bundleId))
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-(--color-line) bg-(--color-surface) px-3 py-2.5">
+      <div>
+        <span className="block text-[13px] text-(--color-ink)">Ignore these apps</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-(--color-ink-faint)">
+          Their audio is left out of the recording. Music playing during a meeting otherwise ends up
+          in the transcript as lyrics. Don&rsquo;t add a meeting app — that would leave you with a
+          recording of nothing.
+        </span>
+      </div>
+
+      {bundleIds.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {bundleIds.map((id) => (
+            <li
+              key={id}
+              className="flex items-center justify-between gap-2 rounded-md bg-(--color-raised) px-2 py-1.5"
+            >
+              <span className="min-w-0 truncate text-xs text-(--color-ink)">{names[id] ?? id}</span>
+              <button
+                type="button"
+                onClick={() => onChange(bundleIds.filter((b) => b !== id))}
+                className="shrink-0 rounded px-1.5 py-0.5 text-xs text-(--color-ink-dim) hover:bg-(--color-surface) hover:text-(--color-ink) focus-visible:ring-2 focus-visible:ring-(--color-me) focus-visible:outline-none"
+                aria-label={`Stop ignoring ${names[id] ?? id}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {!picking ? (
+        <button
+          type="button"
+          onClick={() => void openPicker()}
+          className="self-start rounded-md border border-(--color-line) px-2 py-1 text-xs text-(--color-ink) hover:bg-(--color-raised) focus-visible:ring-2 focus-visible:ring-(--color-me) focus-visible:outline-none"
+        >
+          Add an app…
+        </button>
+      ) : candidates === null ? (
+        <p className="text-xs text-(--color-ink-faint)">Looking for open apps…</p>
+      ) : available.length === 0 ? (
+        <p className="text-xs text-(--color-ink-faint)">
+          Nothing else is open. Open the app you want to ignore, then try again.
+        </p>
+      ) : (
+        <ul className="flex flex-wrap gap-1">
+          {available.map((app) => (
+            <li key={app.bundleId}>
+              <button
+                type="button"
+                onClick={() => {
+                  onChange([...bundleIds, app.bundleId])
+                  setPicking(false)
+                  setCandidates(null)
+                }}
+                className="rounded-md border border-(--color-line) px-2 py-1 text-xs text-(--color-ink) hover:bg-(--color-raised) focus-visible:ring-2 focus-visible:ring-(--color-me) focus-visible:outline-none"
+              >
+                {app.name}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

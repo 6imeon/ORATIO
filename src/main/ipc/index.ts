@@ -44,6 +44,7 @@ import { FORMATS, suggestedFilename } from '../export/formats'
 import { writeExport } from '../export/exporter'
 import { readCaptureHealth, inferTrackAccess } from '../storage/captureHealth'
 import { resolveProvider, runSummarize } from '../ai/Summarizer'
+import { listRunningApps } from '../audio/excludedApps'
 import { loadSettings, saveSettings, setApiKey, hasApiKey } from '../storage/settings'
 
 interface Deps {
@@ -380,6 +381,8 @@ export function registerIpc(deps: Deps): void {
     }
     await shell.openExternal(url)
   })
+
+  ipcMain.handle(IPC.SETTINGS_RUNNING_APPS, () => listRunningApps())
 
   // -- Models --------------------------------------------------------------
 

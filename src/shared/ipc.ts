@@ -82,6 +82,14 @@ export const IPC = {
    * privacy pane rather than describing where to click.
    */
   SETTINGS_OPEN_EXTERNAL: 'settings:openExternal',
+  /**
+   * Apps currently open, for the "ignore these apps" picker.
+   *
+   * Live rather than a fixed catalogue: the useful moment to exclude something
+   * is while it is making noise, and the app you want is the one already
+   * running. Foreground apps only — the full list is mostly background agents.
+   */
+  SETTINGS_RUNNING_APPS: 'settings:runningApps',
 
   // AI providers
   AI_PROVIDERS: 'ai:providers',

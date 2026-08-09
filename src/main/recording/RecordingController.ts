@@ -56,6 +56,15 @@ export interface RecordingControllerDeps {
    * still useful.
    */
   hasModel: () => Promise<boolean>
+  /**
+   * Publish the current app-exclusion list, read from settings at start().
+   *
+   * The controller is the only place settings are loaded on the recording path,
+   * so it is the only place that knows the list is stale. Kept as a callback
+   * rather than having the capture read settings itself, so the platform
+   * implementation stays free of storage concerns.
+   */
+  onExcludedBundleIds?: (bundleIds: string[]) => void
 }
 
 export class RecordingController extends EventEmitter {
@@ -163,6 +172,10 @@ export class RecordingController extends EventEmitter {
     }
 
     const settings = await loadSettings()
+
+    // Before capture.start(), which resolves these to PIDs as it spawns.
+    this.#deps.onExcludedBundleIds?.(settings.excludedBundleIds)
+
     const startedAt = new Date()
     const dir = await createSessionDir(settings.vaultPath, startedAt)
 

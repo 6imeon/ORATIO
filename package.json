@@ -14,7 +14,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
-    "build": "pnpm run typecheck && electron-vite build",
+    "build": "pnpm run typecheck && node scripts/build-native.mjs && electron-vite build",
+    "build:native": "node scripts/build-native.mjs",
     "postinstall": "electron-builder install-app-deps",
     "build:mac": "pnpm run build && electron-builder --mac --arm64",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
