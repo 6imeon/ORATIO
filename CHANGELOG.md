@@ -852,9 +852,9 @@ Not defects so much as work not yet done — the honest state of the build:
 - The ASR worker is verified against three model families but only ever on
   short clips. Multi-hour audio, and the memory behaviour across a long
   queue, are untested.
-- **The build is unsigned and not notarized.** macOS reports a downloaded
-  release as "damaged" rather than as unsigned, so first launch needs
-  right-click → Open. Fixing this properly needs an Apple Developer ID.
+- **The build is ad-hoc signed, not notarized.** macOS does not recognise the
+  developer, so first launch needs right-click → Open. Removing that step needs
+  an Apple Developer ID.
 - Only Apple Silicon is built. There is no Intel or Universal binary.
 - Windows is researched but not implemented — see [docs/WINDOWS.md](docs/WINDOWS.md).
 

@@ -69,6 +69,29 @@ mac:
   # AudioTee uses to capture system audio.
   minimumSystemVersion: '14.2'
   darkModeSupport: true
+  # Ad-hoc sign the bundle: '-' is codesign's pseudo-identity, so the whole app
+  # is signed with no certificate. NOT `null` — electron-builder reads that as
+  # "skip signing" ("skipped macOS code signing reason=identity explicitly is
+  # set to null") and leaves the bundle exactly as broken as omitting it.
+  #
+  # Leaving this unset skips signing altogether, which does not produce an
+  # *unsigned* app: Electron's own binary arrives from upstream already
+  # linker-signed, with a code directory declaring sealed resources. Drop our
+  # code and Info.plist in without re-signing and the seal describes a bundle
+  # that no longer exists — `codesign --verify` fails with "code has no
+  # resources but signature indicates they must be present".
+  #
+  # macOS treats that as a BROKEN signature, not a missing one, and says "is
+  # damaged and can't be opened". Right-click → Open does not clear it — that
+  # bypass only overrides unknown *provenance*, never an invalid signature —
+  # and on macOS 15+ neither does deleting the quarantine attribute. The build
+  # machine never sees it, because a locally built app is never quarantined and
+  # so is never assessed. It only fails on someone else's Mac.
+  #
+  # Still unsigned by a recognised developer, so first launch keeps the
+  # ordinary right-click → Open step. Removing that needs a Developer ID and
+  # notarization.
+  identity: '-'
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
@@ -89,5 +112,5 @@ mac:
 dmg:
   artifactName: ${productName}-${version}-${arch}.${ext}
 
-# Open-source build: unsigned. Signing/notarization intentionally omitted.
+# Open-source build: ad-hoc signed (see `identity` above), not notarized.
 # Users will need to right-click → Open on first launch.
