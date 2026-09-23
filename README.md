@@ -60,14 +60,16 @@ sends audio to a third-party service, and it never asks to see your screen.
 
 ## Status
 
-**v0.1.0** — the first release. Recording, local transcription, search,
+**v0.1.1** — Recording, local transcription, search,
 summarisation, the menu-bar app, per-app audio exclusion and meeting detection
 all work. It has been through a two-hour soak, a kill mid-recording, a real
 system sleep and a full disk.
 
-Builds are **not signed or notarized**, so macOS calls the app "damaged" on
-first launch. It isn't — right-click → **Open** once, and it opens normally
-from then on.
+Builds are ad-hoc signed but **not notarized**, so macOS blocks the first
+launch because it can't check the app with Apple. Open **System Settings →
+Privacy & Security**, click **Open Anyway** next to Oratio, and it opens
+normally from then on. (On macOS 14 and earlier, right-click → **Open** does
+the same.)
 
 Known gaps are listed in [CHANGELOG.md](CHANGELOG.md); the process topology and
 the verified platform findings behind it are in
@@ -88,8 +90,8 @@ Building from source additionally needs **Node 22+** and **pnpm 11+**.
 
 Download the DMG from the [latest
 release](https://github.com/6imeon/ORATIO/releases/latest), drag Oratio to
-Applications, then **right-click → Open** the first time (see
-[Status](#status)).
+Applications, then allow it once under **System Settings → Privacy &
+Security** (see [Status](#status)).
 
 Or build it yourself:
 

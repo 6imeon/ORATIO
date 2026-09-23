@@ -5,6 +5,20 @@ All notable changes to Oratio are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-23
+
+### Fixed
+
+- **Downloaded builds no longer open as "Oratio is damaged".** The app bundle
+  was signed invalidly, which macOS reports as damage and which right-click →
+  Open cannot bypass. It is now ad-hoc signed as a whole. Still not signed
+  with an Apple Developer ID — see **Known gaps** under 0.1.0.
+- **Long stretches of one person talking are split into paragraphs.**
+  Previously a new paragraph started only on a change of speaker or a pause
+  of over six seconds, which steady speech never produces — so a solo
+  recording read as one wall of text. A paragraph now ends at the first
+  sentence break after 45 seconds, or at 90 seconds regardless.
+
 ## [0.1.0] - 2026-08-09
 
 First tagged build. Apple Silicon only, unsigned — see **Known gaps**.
@@ -858,4 +872,5 @@ Not defects so much as work not yet done — the honest state of the build:
 - Only Apple Silicon is built. There is no Intel or Universal binary.
 - Windows is researched but not implemented — see [docs/WINDOWS.md](docs/WINDOWS.md).
 
+[0.1.1]: https://github.com/6imeon/ORATIO/releases/tag/v0.1.1
 [0.1.0]: https://github.com/6imeon/ORATIO/releases/tag/v0.1.0

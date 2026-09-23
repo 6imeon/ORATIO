@@ -1,6 +1,6 @@
 {
   "name": "oratio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first meeting recorder and transcriber. Your audio never leaves your machine.",
   "main": "./out/main/index.cjs",
   "author": "",
