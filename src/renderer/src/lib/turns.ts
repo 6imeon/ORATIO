@@ -48,6 +48,27 @@ export interface Turn {
 const TURN_GAP_MS = 6_000
 
 /**
+ * Past this length a same-speaker turn is split into a new paragraph at the
+ * next sentence end.
+ *
+ * The gap rule alone never fires on steady speech: VAD cuts regions at
+ * ~500 ms silences, so a monologue arrives as a chain of segments separated by
+ * well under `TURN_GAP_MS`, and a solo recording rendered as one paragraph
+ * from first word to last. Waiting for a sentence end keeps the break where a
+ * reader would put it rather than mid-clause.
+ */
+const PARAGRAPH_SOFT_MS = 45_000
+
+/**
+ * Hard ceiling for when no sentence end arrives — ASR models without
+ * punctuation (or a speaker who never stops) would otherwise bring the wall
+ * straight back.
+ */
+const PARAGRAPH_HARD_MS = 90_000
+
+const SENTENCE_END = /[.!?…]["')\]]*$/
+
+/**
  * Merge segments into turns. Pure, so it can be memoised on the transcript
  * identity and never recomputed during a render.
  *
@@ -67,7 +88,8 @@ export function mergeTurns(segments: readonly TranscriptSegment[]): Turn[] {
       last !== undefined &&
       last.speaker === seg.speaker &&
       last.speakerLabel === seg.speakerLabel &&
-      seg.startMs - last.endMs <= TURN_GAP_MS
+      seg.startMs - last.endMs <= TURN_GAP_MS &&
+      !paragraphFull(last)
 
     if (continues) {
       // A space, not a newline: these are clauses of one paragraph. Trimming
@@ -91,6 +113,12 @@ export function mergeTurns(segments: readonly TranscriptSegment[]): Turn[] {
   }
 
   return turns
+}
+
+function paragraphFull(turn: Turn): boolean {
+  const length = turn.endMs - turn.startMs
+  if (length >= PARAGRAPH_HARD_MS) return true
+  return length >= PARAGRAPH_SOFT_MS && SENTENCE_END.test(turn.text)
 }
 
 /**
